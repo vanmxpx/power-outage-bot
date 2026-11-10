@@ -1,7 +1,13 @@
-# Оновлення: забирає нову версію з github.com/vydyshandrey/power-outage-bot у твою копію.
+# Оновлення цієї копії: зливає нову версію з github.com/vydyshandrey/power-outage-bot
+# з власними змінами копії (малий струм заряду після світла, src/charge.js).
 # Запускається кнопкою «⬆️ Оновити» в боті або тут: Actions → Оновлення → Run workflow.
-# Твої налаштування й дані в базі не змінюються. Якщо тести нової версії не пройдуть,
-# нічого не зміниться.
+#
+# Стандартне оновлення проєкту замінює src/ і test/ повністю, тож власний код зник би.
+# Тут нова версія зливається через git merge:
+#   - конфлікт із власними змінами або тести не пройшли → нічого не змінюється,
+#     бот лишається на поточній версії, причина — у підсумку запуску;
+#   - власна фіча зникла після злиття → оновлення теж не застосовується.
+# Файли .github/workflows лишаються свої: workflow не може змінювати workflow.
 name: Оновлення
 
 on:
@@ -17,6 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -24,22 +32,42 @@ jobs:
 
       - name: Нова версія
         run: |
-          git clone --depth 1 https://github.com/vydyshandrey/power-outage-bot.git "$RUNNER_TEMP/upstream"
-          node "$RUNNER_TEMP/upstream/scripts/apply-update.mjs" "$RUNNER_TEMP/upstream" .
+          git config user.name "power-outage-bot"
+          git config user.email "power-outage-bot@users.noreply.github.com"
+          git remote add upstream https://github.com/vydyshandrey/power-outage-bot.git
+          git fetch --quiet upstream main
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "Уже встановлено останню версію." >> "$GITHUB_STEP_SUMMARY"
+            echo "UP_TO_DATE=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          if ! git merge --no-commit --no-ff upstream/main; then
+            {
+              echo "## Оновлення не застосовано"
+              echo "Нова версія конфліктує з власними змінами цієї копії. Бот працює на попередній версії."
+              echo "Файли з конфліктом:"
+              git diff --name-only --diff-filter=U | sed 's/^/- /'
+            } >> "$GITHUB_STEP_SUMMARY"
+            git merge --abort
+            exit 1
+          fi
+          # Workflows stay this copy's own.
+          git reset --quiet HEAD -- .github/workflows
+          git checkout --quiet -- .github/workflows
+          git clean --quiet -fd .github/workflows
 
       - name: Перевірка
+        if: env.UP_TO_DATE != '1'
         run: |
+          test -f src/charge.js || { echo "Власна фіча (src/charge.js) зникла після злиття." >> "$GITHUB_STEP_SUMMARY"; exit 1; }
+          grep -q "chargeTick" src/automation.js || { echo "Автоматика більше не викликає src/charge.js." >> "$GITHUB_STEP_SUMMARY"; exit 1; }
           npm ci
           npm test
 
       - name: Зберегти
+        if: env.UP_TO_DATE != '1'
         run: |
-          if git diff --quiet && [ -z "$(git status --porcelain)" ]; then
-            echo "Уже встановлено останню версію." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          git config user.name "power-outage-bot"
-          git config user.email "power-outage-bot@users.noreply.github.com"
-          git add -A
-          git commit -m "Оновлення до v$(node -p "require('./package.json').version")"
+          version="$(node -p "require('./package.json').version")"
+          git commit --quiet -m "Оновлення до v$version"
           git push
+          echo "## Оновлено до v$version" >> "$GITHUB_STEP_SUMMARY"
