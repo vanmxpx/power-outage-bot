@@ -23,6 +23,10 @@ export const VARS = {
   delay: 'наскільки автоматика запізнилась; порожньо, якщо вчасно',
   source: "хмара інвертора, з назвою об'єкта, якщо їх кілька",
   error: 'текст помилки',
+  amps: 'струм заряду від мережі, А',
+  was: 'струм, що був в інверторі до зміни, А; порожньо, якщо не змінився',
+  gap: 'скільки хвилин не було даних; порожньо, якщо причина — зникнення світла',
+  next: 'що бот робитиме далі',
 };
 
 /**
@@ -106,6 +110,37 @@ export const TEMPLATES = {
     text: '✅ Дані {source} знову оновлюються.',
     vars: ['source', 'object'],
     sample: { source: 'Deye', object: 'Дім' },
+  },
+  charge_low: {
+    title: '🐢 Малий струм заряду (адмінам)',
+    text: `🐢 {where}Струм заряду від мережі тепер {amps} А.${NL}Було {was} А.${NL}Даних від інвертора немає довше {gap} хв.${NL}Звичайний струм повернеться, коли світло буде стабільно {duration}.`,
+    vars: ['where', 'object', 'amps', 'was', 'gap', 'duration'],
+    sample: { where: '', object: 'Дім', amps: '25', was: '60', gap: '', duration: '1 год 0 хв' },
+  },
+  charge_high: {
+    title: '⚡ Звичайний струм заряду (адмінам)',
+    text: `⚡ {where}Світло стабільне {duration}: струм заряду від мережі знову {amps} А.${NL}Було {was} А.`,
+    vars: ['where', 'object', 'amps', 'was', 'duration'],
+    sample: { where: '', object: 'Дім', amps: '60', was: '25', duration: '1 год 0 хв' },
+  },
+  charge_manual: {
+    title: '✍️ Струм заряду записано вручну (адмінам)',
+    text: `✍️ {where}Струм заряду від мережі тепер {amps} А: {who}.${NL}Було {was} А.`,
+    vars: ['where', 'object', 'amps', 'was', 'who'],
+    sample: { where: '', object: 'Дім', amps: '25', was: '60', who: 'Тато' },
+  },
+  charge_failed: {
+    title: '⚠️ Струм заряду не записано (адмінам)',
+    text: `⚠️ {where}Не вдається записати струм заряду від мережі {amps} А вже {duration}. В інверторі лишається попереднє значення.${NL}{next}${NL}<code>{error}</code>`,
+    vars: ['where', 'object', 'amps', 'duration', 'next', 'error'],
+    sample: {
+      where: '',
+      object: 'Дім',
+      amps: '25',
+      duration: '10 хв',
+      next: 'Бот пробуватиме далі.',
+      error: 'HTTP 500',
+    },
   },
 };
 

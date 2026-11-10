@@ -3,6 +3,7 @@
 import { controllable, deviceById, devicesOf, sitesOf } from './config.js';
 import { db, getPerm, kvGet, viewableDevices, viewableSites } from './db.js';
 import { K, gridDevice } from './automation.js';
+import { chargeSettings, chargeSummary } from './charge.js';
 import { DK, deviceState } from './devices.js';
 import { inverterConfigured, inverterLatest, inverterName } from './inverter.js';
 import { batteryRuntime, fmtRuntime } from './runtime.js';
@@ -62,6 +63,11 @@ async function siteLines(env, site) {
             ? `⏳ Доступний заряд вичерпано (${left.limit}).`
             : `⏳ Вистачить на ${fmtRuntime(left.sec)} (${left.limit})`
         );
+    }
+    const chg = chargeSettings(env, site).on ? await chargeSummary(env, site) : null;
+    if (chg?.phase === 'low') {
+      const left = chg.left === null ? '' : `, ще ${fmtDur(chg.left)}`;
+      lines.push(`🐢 Заряд від мережі: малий струм ${chg.cfg.low} А${left}`);
     }
     lines.push(`🕒 Дані ${inverterName(site)}: ${fmtDur(now() - d.ts)} тому`);
   } catch (e) {

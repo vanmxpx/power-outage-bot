@@ -9,6 +9,7 @@
  *   5. If a device action keeps failing for GIVEUP_SEC, ask a human once, keep retrying.
  *   6. Without grid, warn the site's viewers once when the battery falls to the site's threshold.
  *   7. Every fresh reading is stored for charts; once a day, yesterday's summary goes out.
+ *   8. Grid lost or no data → low grid-charge current; grid stable again → the usual one (charge.js).
  */
 
 import {
@@ -25,6 +26,7 @@ import {
   siteKey,
   sitesOf,
 } from './config.js';
+import { chargeTick } from './charge.js';
 import { dailySummaries, logReading } from './charts.js';
 import { kvGet, kvSet, logEvent } from './db.js';
 import { DK, deviceState, setDevicePower } from './devices.js';
@@ -223,12 +225,28 @@ async function switchBackOn(env, site, dev, d) {
 async function tickSite(env, site) {
   if (!inverterConfigured(env, site)) return; // the inverter is not chosen yet
 
-  let d;
+  let d = null;
   try {
     d = await inverterLatest(env, site);
   } catch (e) {
-    return inverterDown(env, site, e);
+    await inverterDown(env, site, e);
   }
+  try {
+    if (d) await tickGrid(env, site, d);
+  } finally {
+    // Last, and whatever happened above: the charge current has its own view of missing and
+    // stale data, and its cloud calls must not hold up the notifications and the devices.
+    try {
+      const downSince = d ? 0 : Number(await kvGet(env, K(site, 'deye_fail_since'))) || 0;
+      await chargeTick(env, site, d, downSince);
+    } catch (e) {
+      await reportError(env, `${site.name}: струм заряду`, e);
+    }
+  }
+}
+
+/** Grid transitions and devices of a site, from a reading its inverter gave. */
+async function tickGrid(env, site, d) {
   await inverterUp(env, site);
 
   await logReading(env, site, d);

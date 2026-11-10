@@ -40,6 +40,43 @@ export const BATTERY_ALERT_DEFAULT = 30;
 
 /** The warning is sent again only after the battery recovers by this much. % */
 export const BATTERY_ALERT_HYST = 5;
+
+/**
+ * Soft start of grid charging (charge.js). Defaults of a site's settings: the low
+ * grid-charge current, A; how long the grid must be present before the usual current
+ * returns, minutes; how long without data counts as "the grid may be gone", minutes.
+ */
+export const CHARGE_LOW_A_DEFAULT = 25;
+export const CHARGE_LOW_MIN_DEFAULT = 60;
+export const CHARGE_GAP_MIN_DEFAULT = 10;
+
+/** The bot never writes a grid-charge current outside 1…this. A */
+export const CHARGE_AMPS_MAX = 240;
+
+/** Pauses between attempts to write the current or to get the result of a write. Seconds. */
+export const CHARGE_RETRY_SEC = [120, 240, 480, 900, 1800, 3600];
+
+/** An attempt is due if its time comes within this from now: checks do not start on the exact second. Seconds. */
+export const CHARGE_SLACK_SEC = 30;
+
+/** An order that was replaced before the cloud answered for it is asked about on every check this many times. */
+export const CHARGE_WATCH_TRIES = 15;
+
+/** When such an order cannot be asked about, the newer value is written once more after this pause. Seconds. */
+export const CHARGE_SETTLE_SEC = 240;
+
+/** A request to the control API is given up after this. Milliseconds. */
+export const CHARGE_HTTP_TIMEOUT_MS = 10000;
+
+/** An inverter usually carries a command out within seconds: the first look at its result. Milliseconds. */
+export const CHARGE_CONFIRM_MS = 4000;
+
+/** An order the cloud keeps unfinished this long while the inverter reports data is sent again. Seconds. */
+export const CHARGE_ORDER_STALE_SEC = 900;
+
+/** Reading the current back from the inverter: how many times to ask for the answer, and the pause. */
+export const CHARGE_READ_TRIES = 4;
+export const CHARGE_READ_WAIT_MS = 3000;
 export const DEFAULT_DEYE_API = 'https://eu1-developer.deyecloud.com/v1.0';
 
 /**

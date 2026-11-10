@@ -103,6 +103,8 @@ export async function deleteSite(env, id) {
   for (const d of devs) await deleteDevice(env, d, false);
   await D.prepare('DELETE FROM sites WHERE id=?').bind(id).run();
   await D.prepare('DELETE FROM user_devices WHERE device=?').bind(`site.${id}`).run();
+  // Ids are reused: a new site must not inherit a current the bot writes into an inverter (charge.js).
+  await D.prepare('DELETE FROM kv WHERE k LIKE ? OR k=?').bind(`cfg.chg%@${id}`, `chg_state@${id}`).run();
   await loadConfig(env);
 }
 

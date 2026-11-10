@@ -8,17 +8,27 @@
 
 import { userCard } from './access.js';
 import { batteryThreshold } from './automation.js';
+import {
+  chargeManual,
+  chargeRead,
+  chargeReset,
+  chargeSettings,
+  chargeSummary,
+  settingsProblem,
+  validAmps,
+} from './charge.js';
 import { batteryCapacity, parseCapacity, batteryCutoff, parseCutoff } from './runtime.js';
-import { CATEGORIES, DEVICE_TYPES, devicesOf, sitesOf } from './config.js';
+import { CATEGORIES, CHARGE_AMPS_MAX, DEVICE_TYPES, devicesOf, sitesOf } from './config.js';
 import { db, kvGet, kvSet, usersBy } from './db.js';
 import { listDevices, missingDeviceSecrets } from './devices.js';
-import { CLOUDS, listInverters, missingSecrets, probeInverter, secretNames } from './inverter.js';
+import { CLOUDS, chargeControl, listInverters, missingSecrets, probeInverter, secretNames } from './inverter.js';
 import { TEMPLATES, VARS, fill, templateText, unknownVars } from './messages.js';
 import {
   addDevice,
   addSite,
   deleteDevice,
   deleteSite,
+  displayName,
   setAlias,
   setSetting,
   setTemplate,
@@ -26,7 +36,7 @@ import {
   updateSite,
 } from './store.js';
 import { RELEASES_BUTTON, edit, mainKeyboard, send } from './telegram.js';
-import { NL, esc } from './util.js';
+import { NL, esc, fmtDur } from './util.js';
 import { updateOffer } from './updates.js';
 
 const back = (data) => [{ text: '⬅️ Назад', callback_data: data }];
@@ -138,8 +148,67 @@ function siteCard(env, id) {
     { text: `🔋 Поріг відключення: ${cutoff === null ? 'не вказано' : `${cutoff}%`}`, callback_data: `s:bl:${id}` },
   ]);
   kb.push([{ text: `🔋 Ємність батареї: ${cap ? `${cap} кВт·год` : 'не вказано'}`, callback_data: `s:bc:${id}` }]);
+  if (chargeControl(env, s)) {
+    const c = chargeSettings(env, s);
+    const label = c.on ? `${c.low} А, потім ${c.high} А` : 'вимкнено';
+    kb.push([{ text: `🐢 Заряд після світла: ${label}`, callback_data: `s:cg:${id}` }]);
+  }
   kb.push([{ text: '🗑 Видалити', callback_data: `s:sd:${id}` }], back('s:sl'));
   return { text: lines.join(NL), kb };
+}
+
+const CHARGE_MINUTES = [5, 15, 30, 60, 90, 120];
+const CHARGE_GAPS = [10, 15, 20, 30];
+
+/**
+ * "🐢 Заряд після світла": the low grid-charge current after an outage (charge.js).
+ * @param {string} [note] what just happened, shown under the description
+ * @param {Array<object> | null} [extra] one more row of buttons
+ */
+async function chargeCard(env, id, note = '', extra = null) {
+  const s = siteOf(env, id);
+  if (!s || !chargeControl(env, s)) return siteCard(env, id);
+  const { cfg, phase, left, task } = await chargeSummary(env, s);
+  const lines = [
+    '<b>🐢 Заряд після світла</b>',
+    `Коли світло зникає або даних від інвертора немає довше ${cfg.gap} хв, бот записує в інвертор малий струм заряду від мережі. Коли світло стабільно є ${cfg.minutes} хв, повертає звичайний. Інших налаштувань інвертора бот не змінює.`,
+    '',
+  ];
+  if (!cfg.on) lines.push('Зараз: вимкнено.');
+  else if (phase === 'low') {
+    lines.push(`Зараз: малий струм, ${left === null ? 'чекає на світло' : `ще ${fmtDur(left)}`}.`);
+  } else lines.push('Зараз: звичайний струм.');
+  if (task) {
+    const what = task.order ? 'чекає підтвердження хмари' : 'ще не відправлено';
+    lines.push(`⏳ Запис ${task.target} А: ${what}${task.error ? `. ${esc(task.error)}` : ''}`);
+  }
+  if (note) lines.push('', note);
+  const kb = [
+    [{ text: cfg.on ? '✅ Увімкнено' : '⛔ Вимкнено', callback_data: `s:cT:${id}` }],
+    [
+      { text: `🐢 Малий: ${cfg.low} А`, callback_data: `s:cl:${id}` },
+      { text: `⚡ Звичайний: ${cfg.high === null ? 'не вказано' : `${cfg.high} А`}`, callback_data: `s:ch:${id}` },
+    ],
+    [
+      { text: `⏱ Малий тримати: ${cfg.minutes} хв`, callback_data: `s:cm:${id}` },
+      { text: `📡 Без даних: ${cfg.gap} хв`, callback_data: `s:cn:${id}` },
+    ],
+    [
+      { text: '🔍 Що зараз в інверторі', callback_data: `s:cr:${id}` },
+      { text: '✍️ Записати зараз', callback_data: `s:cw:${id}` },
+    ],
+  ];
+  if (extra) kb.push(extra);
+  kb.push(back(`s:so:${id}`));
+  return { text: lines.join(NL), kb };
+}
+
+/** Parses typed amperes: "25", "25 А". @returns {number | null} */
+export function parseAmps(text) {
+  const m = String(text)
+    .trim()
+    .match(/^(\d{1,3})\s*[AА]?$/i);
+  return m && validAmps(Number(m[1])) ? Number(m[1]) : null;
 }
 
 function sourceMenu(env, id) {
@@ -422,6 +491,27 @@ export async function onSettingsText(env, msg, user) {
       await send(env, chat, c.text, { reply_markup: { inline_keyboard: c.kb } });
       return true;
     }
+    case 'chg_low':
+    case 'chg_high': {
+      const site = siteOf(env, state.id);
+      const amps = parseAmps(text);
+      let problem = null;
+      if (!site) problem = "об'єкт уже видалено";
+      else if (amps === null) problem = `потрібне ціле число від 1 до ${CHARGE_AMPS_MAX} А`;
+      else {
+        const next = { ...chargeSettings(env, site), [state.kind === 'chg_low' ? 'low' : 'high']: amps };
+        if (next.high !== null) problem = settingsProblem(next);
+      }
+      if (problem) {
+        await send(env, chat, `⚠️ Не підходить: ${problem}. Спробуй ще або /cancel.`);
+        return true;
+      }
+      await setSetting(env, `${state.kind}@${state.id}`, String(amps));
+      await clearAwait(env, chat);
+      const c = await chargeCard(env, state.id);
+      await send(env, chat, c.text, { reply_markup: { inline_keyboard: c.kb } });
+      return true;
+    }
     case 'site_name': {
       await updateSite(env, state.id, { name: text.slice(0, 40) });
       await clearAwait(env, chat);
@@ -624,6 +714,151 @@ export async function onSettingsCallback(env, cq, me, parts, done) {
     case 'sD':
       await deleteSite(env, a);
       return show(sitesList(env));
+
+    /* low grid-charge current after an outage */
+    case 'cg':
+      return show(await chargeCard(env, a));
+    case 'cT': {
+      const site = siteOf(env, a);
+      const ctl = site && chargeControl(env, site);
+      if (!ctl) return show(siteCard(env, a));
+      const { cfg, phase } = await chargeSummary(env, site);
+      if (cfg.on) {
+        await setSetting(env, `chg@${a}`, '0');
+        await chargeReset(env, site);
+        const left =
+          phase === 'low' ? 'В інверторі лишився малий струм. Повернути звичайний: «✍️ Записати зараз».' : '';
+        return show(await chargeCard(env, a, left));
+      }
+      await chargeReset(env, site);
+      // The usual current is what the inverter holds now, unless the admin has set another.
+      let note = '';
+      if (cfg.high === null) {
+        try {
+          const cur = await chargeRead(env, site);
+          if (validAmps(cur) && cur > cfg.low) {
+            await setSetting(env, `chg_high@${a}`, String(cur));
+            note = `Звичайний струм узято з інвертора: ${cur} А.`;
+          } else note = `В інверторі зараз ${cur} А. Вкажи звичайний струм, більший за малий.`;
+        } catch (e) {
+          note = `Не вдалося зчитати струм з інвертора: ${esc(e.message)}. Вкажи звичайний струм сам.`;
+        }
+      }
+      const problem = settingsProblem(chargeSettings(env, site));
+      if (problem) {
+        return show(await chargeCard(env, a, [note, `⚠️ Не ввімкнено: ${problem}.`].filter(Boolean).join(NL)));
+      }
+      await setSetting(env, `chg@${a}`, '1');
+      return show(await chargeCard(env, a, note));
+    }
+    case 'cl':
+    case 'ch':
+      await ask(
+        env,
+        chat,
+        { kind: act === 'cl' ? 'chg_low' : 'chg_high', id: a },
+        act === 'cl'
+          ? 'Малий струм заряду від мережі, А: з ним інвертор зустріне світло після відключення. Наприклад <code>25</code>.'
+          : 'Звичайний струм заряду від мережі, А: бот поверне його, коли світло буде стабільним.'
+      );
+      return done();
+    case 'cm':
+    case 'cn': {
+      const site = siteOf(env, a);
+      if (!site) return show(sitesList(env));
+      const cfg = chargeSettings(env, site);
+      const [list, cur, to] = act === 'cm' ? [CHARGE_MINUTES, cfg.minutes, 'cM'] : [CHARGE_GAPS, cfg.gap, 'cN'];
+      return show({
+        text:
+          act === 'cm'
+            ? 'Скільки хвилин стабільного світла тримати малий струм?'
+            : 'Скільки хвилин без даних від інвертора вважати можливим відключенням? Дані в хмарі оновлюються раз на кілька хвилин, тому менше 10 не буває.',
+        kb: [
+          list.map((v) => ({ text: `${v === cur ? '✅ ' : ''}${v}`, callback_data: `s:${to}:${a}:${v}` })),
+          back(`s:cg:${a}`),
+        ],
+      });
+    }
+    case 'cM':
+    case 'cN': {
+      const list = act === 'cM' ? CHARGE_MINUTES : CHARGE_GAPS;
+      if (list.includes(Number(b))) await setSetting(env, `${act === 'cM' ? 'chg_min' : 'chg_gap'}@${a}`, b);
+      return show(await chargeCard(env, a));
+    }
+    case 'cr': {
+      const site = siteOf(env, a);
+      const ctl = site && chargeControl(env, site);
+      if (!ctl) return show(siteCard(env, a));
+      try {
+        const cur = await chargeRead(env, site);
+        const cfg = chargeSettings(env, site);
+        const save = validAmps(cur) && cur > cfg.low && cur !== cfg.high;
+        const row = save ? [{ text: `⚡ Зберегти ${cur} А як звичайний`, callback_data: `s:cH:${a}:${cur}` }] : null;
+        return show(await chargeCard(env, a, `В інверторі зараз: ${cur} А.`, row));
+      } catch (e) {
+        return show(await chargeCard(env, a, `Не вдалося зчитати: ${esc(e.message)}`));
+      }
+    }
+    case 'cH': {
+      const site = siteOf(env, a);
+      if (site && validAmps(Number(b)) && Number(b) > chargeSettings(env, site).low) {
+        await setSetting(env, `chg_high@${a}`, String(Number(b)));
+      }
+      return show(await chargeCard(env, a));
+    }
+    case 'cw': {
+      const site = siteOf(env, a);
+      if (!site) return show(sitesList(env));
+      const { cfg, phase } = await chargeSummary(env, site);
+      const row = [{ text: `🐢 Малий: ${cfg.low} А`, callback_data: `s:cv:${a}:low` }];
+      // While the low current is in force, raising it by hand would defeat the whole point.
+      const held = cfg.on && phase === 'low';
+      if (cfg.high !== null && !held) {
+        row.push({ text: `⚡ Звичайний: ${cfg.high} А`, callback_data: `s:cv:${a}:high` });
+      }
+      return show({
+        text: [
+          'Який струм записати в інвертор зараз? Наступна зміна (світло зникло або стабільно повернулось) запише своє значення.',
+          held ? 'Зараз діє малий струм, тому звичайний записати не можна: спершу вимкни «Заряд після світла».' : '',
+        ]
+          .filter(Boolean)
+          .join(NL),
+        kb: [row, back(`s:cg:${a}`)],
+      });
+    }
+    case 'cv':
+    case 'cW': {
+      const site = siteOf(env, a);
+      const ctl = site && chargeControl(env, site);
+      const amps = ctl && chargeSettings(env, site)[b === 'high' ? 'high' : 'low'];
+      if (!ctl || !validAmps(amps)) return show(await chargeCard(env, a));
+      if (act === 'cv') {
+        return show({
+          text: [
+            'Бот відправить у хмару інвертора одну команду:',
+            `<code>${esc(ctl.preview(amps))}</code>`,
+            '',
+            'Інших параметрів вона не змінює. Відправити?',
+          ].join(NL),
+          kb: [
+            [
+              { text: '✅ Так, відправити', callback_data: `s:cW:${a}:${b}` },
+              { text: 'Ні', callback_data: `s:cg:${a}` },
+            ],
+          ],
+        });
+      }
+      let note = '';
+      try {
+        const task = await chargeManual(env, site, b === 'high' ? 'high' : 'low', displayName(me));
+        if (task?.order) {
+          note = `⏳ Команду відправлено (№ ${esc(task.order)}). Результат напишу, щойно хмара підтвердить.`;
+        } else if (task) note = `⚠️ Поки не відправлено: ${esc(task.error || '')}. Бот пробуватиме далі.`;
+      } catch (e) {
+        note = `⚠️ ${esc(e.message)}`;
+      }
+      return show(await chargeCard(env, a, note));
+    }
 
     /* devices */
     case 'dl':

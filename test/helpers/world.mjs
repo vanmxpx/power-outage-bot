@@ -125,11 +125,17 @@ function createD1() {
       bind: (...a) => ((args = a), st),
       first: async () => sql.prepare(query).get(...args) ?? null,
       all: async () => ({ results: sql.prepare(query).all(...args) }),
-      run: async () => (sql.prepare(query).run(...args), {}),
+      run: async () => {
+        if (hooks.fail?.(query, args)) throw new Error('D1_ERROR: injected');
+        sql.prepare(query).run(...args);
+        return {};
+      },
     };
     return st;
   };
-  return { prepare, batch: async (list) => Promise.all(list.map((s) => s.run())), sql };
+  /** Tests set hooks.fail = (query, args) => boolean to make a write fail. */
+  const hooks = { fail: null };
+  return { prepare, batch: async (list) => Promise.all(list.map((s) => s.run())), sql, hooks };
 }
 
 export const ACCESS_KEY = 'access-key';
@@ -156,6 +162,14 @@ export function createWorld({ users = true } = {}) {
     mideaFails: 0, // next N Midea calls answer 3102
     routeFails: false, // regional route lookup answers 10004
     deyeFails: 0, // next N Deye /device/latest calls answer 500
+    charge: 60, // A: the grid-charge current the inverter holds
+    orders: [], // Deye battery-parameter orders: { id, sn, type, value, keys, state, hold }
+    writeFails: 0, // next N orders are rejected ("device offline")
+    orderPending: 0, // the next order stays "sending" for N result checks (Infinity: until w.land)
+    orderFail: false, // the inverter does not carry orders out: they end as failed
+    exclusive: false, // like the real cloud: no new order while another is being sent
+    readFails: 0, // next N reads of the inverter's settings are rejected
+    deyeCalls: { write: 0, result: 0, read: 0 }, // requests to the metered control API
     dessFails: 0, // next N DESS data calls answer a platform error
     dessLogins: 0,
     vcFails: 0,
@@ -221,6 +235,60 @@ export function createWorld({ users = true } = {}) {
         ],
       });
     }
+    // Deye control orders. Ids are 64-bit, so the answers are raw text, as on the wire.
+    const raw = (text) => ({ ok: true, status: 200, json: async () => JSON.parse(text), text: async () => text });
+    if (url.endsWith('/order/battery/parameter/update')) {
+      w.deyeCalls.write++;
+      if (w.writeFails > 0) {
+        w.writeFails--;
+        return json({ code: '2104006', msg: 'device offline', success: false });
+      }
+      if (w.exclusive && w.orders.some((o) => o.state === 'sending')) {
+        return json({ code: '2104004', msg: 'command concurrent running', success: false });
+      }
+      const id = `46116860184273879${String(w.orders.length).padStart(2, '0')}`;
+      const o = {
+        id,
+        sn: body.deviceSn,
+        type: body.paramterType,
+        value: body.value,
+        keys: Object.keys(body).sort(),
+        state: 'sending',
+        hold: w.orderPending,
+      };
+      w.orderPending = 0;
+      w.orders.push(o);
+      if (!o.hold) w.land(o); // the inverter carries it out at once
+      return raw(`{"code":"1000000","msg":"success","success":true,"orderId":${id},"connectionStatus":1}`);
+    }
+    const orderUrl = url.match(/\/order\/(\d+)$/);
+    if (orderUrl) {
+      w.deyeCalls.result++;
+      const o = w.orders.find((x) => x.id === orderUrl[1]);
+      if (!o) return json({ code: '2101001', msg: 'order not found', success: false });
+      if (o.state === 'sending' && o.hold > 0) {
+        o.hold--;
+        return json({ code: '1000000', success: true, status: 100 });
+      }
+      if (o.state === 'sending') w.land(o);
+      return json(
+        o.state === 'done'
+          ? { code: '1000000', success: true, status: 666 }
+          : { code: '1000000', success: true, status: 500, error: '530' }
+      );
+    }
+    if (url.endsWith('/strategy/dynamicControl/read')) {
+      w.deyeCalls.read++;
+      if (w.readFails > 0) {
+        w.readFails--;
+        return json({ code: '2104006', msg: 'device offline', success: false });
+      }
+      return raw('{"code":"1000000","success":true,"orderId":4611686018427388001}');
+    }
+    if (url.endsWith('/strategy/dynamicControl/readResult')) {
+      if (init.body !== '{"orderId":4611686018427388001}') return json({ code: '2101001', msg: 'order not found' });
+      return json({ code: '1000000', success: true, gridChargeAmpere: w.charge, gridChargeAction: 'on' });
+    }
     if (url.includes('/station/listWithDevice')) {
       return json({
         code: '1000000',
@@ -229,7 +297,8 @@ export function createWorld({ users = true } = {}) {
     }
     if (url.includes('api.telegram.org')) {
       const method = url.split('/').pop();
-      if (method === 'sendMessage' && body.parse_mode === 'HTML' && /<(?!\/?(b|i|u|s|code)>)/.test(body.text)) {
+      const shows = method === 'sendMessage' || method === 'editMessageText';
+      if (shows && body.parse_mode === 'HTML' && /<(?!\/?(b|i|u|s|code)>)/.test(body.text)) {
         return json({ ok: false, error_code: 400, description: "Bad Request: can't parse entities" });
       }
       if (method === 'sendMessage' || method === 'editMessageText') {
@@ -297,6 +366,13 @@ export function createWorld({ users = true } = {}) {
     DEYE_SN: 'SN1',
     TZ: 'Europe/Kyiv',
   };
+
+  /** The inverter carries an order out now (or, with orderFail, refuses it). */
+  w.land = (o) => {
+    o.state = w.orderFail ? 'failed' : 'done';
+    if (o.state === 'done') w.charge = o.value;
+  };
+  w.d1 = D1.hooks;
 
   const ctx = { waitUntil: (p) => w.pending.push(p) };
   const settle = async () => {

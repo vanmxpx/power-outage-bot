@@ -11,7 +11,14 @@
  */
 
 import { dessDevices, dessLatest } from './dess.js';
-import { deyeLatest, deyeStations } from './deye.js';
+import {
+  deyeGridCharge,
+  deyeGridChargeRequest,
+  deyeLatest,
+  deyeOrder,
+  deyeSetGridCharge,
+  deyeStations,
+} from './deye.js';
 import { valueCloudsLatest, valueCloudsLogin, valueCloudsProbe } from './valueclouds.js';
 
 const suffix = (account) => (Number(account) > 1 ? `_${account}` : '');
@@ -26,6 +33,15 @@ const suffix = (account) => (Number(account) > 1 ? `_${account}` : '');
  * @property {((conn: any) => Promise<Array<{label: string, params: Record<string, string>}>>) | null} list
  *   inverters visible to the account; null when the cloud cannot list them
  * @property {string[]} [manual] identifiers to ask for when there is no list
+ * @property {ChargeDriver} [charge] setting the grid-charge current, for clouds that can (charge.js)
+ */
+
+/**
+ * @typedef {object} ChargeDriver
+ * @property {(conn: any, params: Record<string, string>) => Promise<number>} read A the inverter holds now
+ * @property {(conn: any, params: Record<string, string>, amps: number) => Promise<{order: string, online: boolean | null}>} write
+ * @property {(conn: any, order: string) => Promise<{state: 'done' | 'failed' | 'pending', detail: string}>} result
+ * @property {(conn: any, params: Record<string, string>, amps: number) => string} preview the request, shown to the admin
  */
 
 /** @type {Record<string, Cloud>} */
@@ -56,6 +72,15 @@ export const CLOUDS = {
           .filter((d) => d.deviceType === 'INVERTER')
           .map((d) => ({ label: `${st.name} · ${d.deviceSn}`, params: { sn: d.deviceSn } }))
       );
+    },
+    charge: {
+      read: (c, p) => deyeGridCharge(c, p.sn),
+      write: (c, p, amps) => deyeSetGridCharge(c, p.sn, amps),
+      result: (c, order) => deyeOrder(c, order),
+      preview(c, p, amps) {
+        const req = deyeGridChargeRequest(c, p.sn, amps);
+        return `${req.method} ${req.url}\n${JSON.stringify(req.body)}`;
+      },
     },
   },
   dess: {
@@ -113,6 +138,26 @@ export const inverterConfigured = (env, site) => Boolean(site.params?.sn);
 export function inverterLatest(env, site) {
   const cloud = cloudOf(site.inverter);
   return cloud.latest(cloud.connect(env, site.account, site.params), site.params);
+}
+
+/**
+ * Control of the grid-charge current of a site's inverter; null when its cloud cannot do
+ * it or the inverter is not chosen yet.
+ * @param {import('./config.js').Site} site
+ */
+export function chargeControl(env, site) {
+  const cloud = CLOUDS[site?.inverter];
+  if (!cloud?.charge || !site.params?.sn) return null;
+  const conn = cloud.connect(env, site.account, site.params);
+  return {
+    read: () => cloud.charge.read(conn, site.params),
+    /** @param {number} amps */
+    write: (amps) => cloud.charge.write(conn, site.params, amps),
+    /** @param {string} order */
+    result: (order) => cloud.charge.result(conn, order),
+    /** @param {number} amps */
+    preview: (amps) => cloud.charge.preview(conn, site.params, amps),
+  };
 }
 
 /**
