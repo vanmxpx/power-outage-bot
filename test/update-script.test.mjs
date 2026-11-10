@@ -4,8 +4,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
-const script = new URL('../scripts/apply-update.mjs', import.meta.url).pathname;
+const script = fileURLToPath(new URL('../scripts/apply-update.mjs', import.meta.url));
 
 function tree(root, files) {
   for (const [p, text] of Object.entries(files)) {
