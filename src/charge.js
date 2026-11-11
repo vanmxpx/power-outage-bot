@@ -422,6 +422,9 @@ export async function chargeTick(env, site, d, downSince = 0) {
     }
     // Otherwise: a short gap in the data. Nothing is known, nothing changes.
 
+    // While the low current is in force a reading of the inverter is always planned.
+    if (st.phase === 'low' && !st.task && !st.check) st.check = t;
+
     // The admin changed the current while its write was open: the write follows the setting.
     const k = st.task?.kind;
     if ((k === 'low' || k === 'high') && st.task.target !== cfg[k] && !st.task.told) {
