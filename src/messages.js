@@ -27,6 +27,7 @@ export const VARS = {
   was: 'струм, що був в інверторі до зміни, А; порожньо, якщо не змінився',
   gap: 'скільки хвилин не було даних; порожньо, якщо причина — зникнення світла',
   next: 'що бот робитиме далі',
+  again: 'пояснення, коли значення в інверторі змінили не через бот; інакше порожньо',
 };
 
 /**
@@ -113,21 +114,33 @@ export const TEMPLATES = {
   },
   charge_low: {
     title: '🐢 Малий струм заряду (адмінам)',
-    text: `🐢 {where}Струм заряду від мережі тепер {amps} А.${NL}Було {was} А.${NL}Даних від інвертора немає довше {gap} хв.${NL}Звичайний струм повернеться, коли світло буде стабільно {duration}.`,
-    vars: ['where', 'object', 'amps', 'was', 'gap', 'duration'],
-    sample: { where: '', object: 'Дім', amps: '25', was: '60', gap: '', duration: '1 год 0 хв' },
+    text: `🐢 {where}Струм заряду від мережі тепер {amps} А.${NL}Було {was} А.${NL}Даних від інвертора немає довше {gap} хв.${NL}{again}${NL}Звичайний струм повернеться, коли світло буде стабільно {duration}.`,
+    vars: ['where', 'object', 'amps', 'was', 'gap', 'again', 'duration'],
+    sample: { where: '', object: 'Дім', amps: '25', was: '60', gap: '', again: '', duration: '1 год 0 хв' },
   },
   charge_high: {
     title: '⚡ Звичайний струм заряду (адмінам)',
-    text: `⚡ {where}Світло стабільне {duration}: струм заряду від мережі знову {amps} А.${NL}Було {was} А.`,
-    vars: ['where', 'object', 'amps', 'was', 'duration'],
-    sample: { where: '', object: 'Дім', amps: '60', was: '25', duration: '1 год 0 хв' },
+    text: `⚡ {where}Світло стабільне {duration}: струм заряду від мережі знову {amps} А.${NL}Було {was} А.${NL}{again}`,
+    vars: ['where', 'object', 'amps', 'was', 'again', 'duration'],
+    sample: { where: '', object: 'Дім', amps: '60', was: '25', again: '', duration: '1 год 0 хв' },
   },
   charge_manual: {
     title: '✍️ Струм заряду записано вручну (адмінам)',
     text: `✍️ {where}Струм заряду від мережі тепер {amps} А: {who}.${NL}Було {was} А.`,
     vars: ['where', 'object', 'amps', 'was', 'who'],
     sample: { where: '', object: 'Дім', amps: '25', was: '60', who: 'Тато' },
+  },
+  charge_drift: {
+    title: '⚠️ Струм заряду не тримається (адмінам)',
+    text: `⚠️ {where}Струм заряду від мережі {amps} А не тримається: {error}. Перевір, чи його не змінюють з екрана інвертора або із застосунку.${NL}{next}`,
+    vars: ['where', 'object', 'amps', 'error', 'next'],
+    sample: {
+      where: '',
+      object: 'Дім',
+      amps: '25',
+      error: 'інвертор підтверджує запис, але за хвилину в ньому знову 30 А',
+      next: 'Бот пробуватиме далі, але рідше.',
+    },
   },
   charge_failed: {
     title: '⚠️ Струм заряду не записано (адмінам)',

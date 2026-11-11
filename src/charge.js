@@ -22,6 +22,10 @@
  *     saved before the order is sent, so a crash in between repeats the write instead of
  *     forgetting it. An order that was replaced before the cloud answered for it is
  *     watched to its end: if it lands after the newer one, the newer value is written again;
+ *   - the cloud's "carried out" is not the last word: the inverter's screen or the vendor's
+ *     app can write the old value back. So the inverter is read after a write, every
+ *     CHARGE_VERIFY_SEC while the low current is in force, and when the grid returns; a
+ *     value that is not the expected one is written again;
  *   - retries back off (CHARGE_RETRY_SEC), because the cloud's API is metered, and start
  *     again at once when the inverter comes back online.
  *
@@ -40,6 +44,8 @@ import {
   CHARGE_RETRY_SEC,
   CHARGE_SETTLE_SEC,
   CHARGE_SLACK_SEC,
+  CHARGE_VERIFY_REDO,
+  CHARGE_VERIFY_SEC,
   CHARGE_WATCH_TRIES,
   GIVEUP_SEC,
   sitesOf,
@@ -104,7 +110,7 @@ export function settingsProblem(cfg) {
  * @property {'low' | 'high' | 'manual'} kind what it is for
  * @property {string} actor "автоматика" or the admin's name
  * @property {number} since when it was opened
- * @property {string} [why] for "low": "off" (grid lost) or "gap" (no data)
+ * @property {string} [why] "off" (grid lost), "gap" (no data) or "changed" (the inverter held another value)
  * @property {number | null} [was] value known to be in the inverter before the write
  * @property {boolean} [sending] saved just before the order is sent, cleared when the cloud answers
  * @property {string} [order] the cloud order of this write
@@ -124,6 +130,8 @@ export function settingsProblem(cfg) {
  * @property {'low' | 'high' | null} phase
  * @property {number} ok since when the grid has been present in the low phase; 0 — not yet
  * @property {number | null} known A confirmed in the inverter; null while unknown
+ * @property {number} check when the inverter is to be read next, to see that it holds the expected value; 0 — not planned
+ * @property {number} redo how many times in a row that reading found another value
  * @property {ChargeTask | null} task
  */
 
@@ -141,6 +149,8 @@ async function load(env, site) {
     phase: st.phase === 'low' || st.phase === 'high' ? st.phase : null,
     ok: Number(st.ok) || 0,
     known: Number.isFinite(st.known) ? st.known : null,
+    check: Number(st.check) || 0,
+    redo: Number(st.redo) || 0,
     task: st.task || null,
   };
   return {
@@ -192,11 +202,23 @@ async function tell(env, site, st, cfg) {
     amps: t.target,
     was: Number.isFinite(t.was) && t.was !== t.target ? t.was : '',
     gap: t.why === 'gap' ? cfg.gap : '',
+    again: t.why === 'changed' ? 'В інверторі це значення змінили не через бот, тому його записано знову.' : '',
     duration: fmtDur(cfg.minutes * 60),
     who: t.actor,
   };
   const tpl = t.kind === 'low' ? 'charge_low' : t.kind === 'high' ? 'charge_high' : 'charge_manual';
   await broadcast(env, render(env, tpl, v), 'admin');
+}
+
+/**
+ * The write is finished. An automatic one is checked against the inverter on the next
+ * check; if the inverter keeps dropping the value, only every CHARGE_VERIFY_SEC.
+ */
+function close(st) {
+  const t = st.task;
+  st.task = null;
+  if (t.kind === 'manual') return;
+  st.check = now() + (st.redo > CHARGE_VERIFY_REDO ? CHARGE_VERIFY_SEC : CHARGE_SLACK_SEC + 1);
 }
 
 /** Not now: look again after a pause. */
@@ -261,7 +283,7 @@ async function work(env, site, box, cfg, usable, inline) {
   if (!t.order) {
     if (st.known === t.target && !t.prev) {
       await tell(env, site, st, cfg); // already there: nothing to write
-      return void (st.task = null);
+      return close(st);
     }
     st.known = null; // from here the value in the inverter is uncertain until the cloud confirms
     t.sending = true;
@@ -296,7 +318,7 @@ async function work(env, site, box, cfg, usable, inline) {
     st.known = t.target;
     await tell(env, site, st, cfg);
   }
-  if (!t.prev) return void (st.task = null);
+  if (!t.prev) return close(st);
 
   // An older order with another value may still land after this one: see it to its end.
   const again = () => {
@@ -318,9 +340,41 @@ async function work(env, site, box, cfg, usable, inline) {
     return later(st, e, usable);
   }
   if (old.state === 'pending') return later(st, `стара команда ще в черзі хмари (${old.detail})`, usable);
-  if (old.state !== 'done') return void (st.task = null); // it never reached the inverter
+  if (old.state !== 'done') return close(st); // it never reached the inverter
   again(); // it was carried out, perhaps after ours: write our value once more
   return work(env, site, box, cfg, usable, inline);
+}
+
+/**
+ * Reads the inverter and compares it with what the phase expects. Another value means the
+ * inverter's screen or the vendor's app wrote over the bot's: it is written again.
+ */
+async function verify(env, site, box, cfg, usable) {
+  const { st } = box;
+  const target = st.phase === 'low' ? cfg.low : cfg.high;
+  let cur;
+  try {
+    cur = await chargeControl(env, site).read();
+  } catch {
+    st.check = now() + CHARGE_RETRY_SEC[2]; // the inverter cannot be asked now
+    return;
+  }
+  st.known = cur;
+  if (cur === target) {
+    st.redo = 0;
+    st.check = st.phase === 'low' ? now() + CHARGE_VERIFY_SEC : 0;
+    return;
+  }
+  st.redo += 1;
+  st.check = 0;
+  if (st.redo === CHARGE_VERIFY_REDO + 1) {
+    const error = `інвертор підтверджує запис, але за хвилину в ньому знову ${cur} А`;
+    await logEvent(env, 'charge_fail', chargeDevice(site), AUTOMATION, { to: target, error });
+    const v = { ...vars(env, site), amps: target, duration: '', error, next: 'Бот пробуватиме далі, але рідше.' };
+    await broadcast(env, render(env, 'charge_drift', v), 'admin');
+  }
+  open(st, st.phase, target, AUTOMATION, 'changed', cur);
+  return work(env, site, box, cfg, usable, true);
 }
 
 /**
@@ -345,6 +399,7 @@ export async function chargeTick(env, site, d, downSince = 0) {
     if (gone) {
       const was = st.known;
       if (st.phase !== 'low') st.known = null; // a new outage: what another phase confirmed is not trusted
+      if (st.phase === 'low' && st.ok) st.check = t; // the grid was back and is gone again: see what the inverter holds
       st.phase = 'low';
       st.ok = 0;
       const pending = st.task?.kind === 'low' && st.task.target === cfg.low;
@@ -355,8 +410,10 @@ export async function chargeTick(env, site, d, downSince = 0) {
     } else if (usable) {
       if (st.phase === null) st.phase = 'high'; // switched on with the grid present: nothing to write
       if (st.phase === 'low') {
-        if (!st.ok) st.ok = ts;
-        else if (ts - st.ok >= cfg.minutes * 60) {
+        if (!st.ok) {
+          st.ok = ts;
+          st.check = t; // the grid is back: the moment the low current matters
+        } else if (ts - st.ok >= cfg.minutes * 60) {
           st.phase = 'high';
           st.ok = 0;
           open(st, 'high', cfg.high, AUTOMATION);
@@ -374,12 +431,16 @@ export async function chargeTick(env, site, d, downSince = 0) {
     // Switched off (or the settings are unusable): forget the phase and the automatic write.
     st.phase = null;
     st.ok = 0;
+    st.check = 0;
+    st.redo = 0;
     if (st.task && st.task.kind !== 'manual') st.task = null;
   }
 
   try {
     // The check in which the grid disappears is the busiest one: the result of "low" waits for the next.
-    await work(env, site, box, cfg, usable, st.task?.kind !== 'low');
+    await work(env, site, box, cfg, usable, st.task?.kind !== 'low' || st.task.why === 'changed');
+    const due = st.phase && st.check && now() + CHARGE_SLACK_SEC >= st.check;
+    if (due && !st.task && usable) await verify(env, site, box, cfg, usable);
   } finally {
     await box.save();
   }
@@ -429,7 +490,7 @@ export async function chargeRead(env, site) {
 /** Switching the automation on or off starts from a clean slate: no phase, nothing assumed about the inverter. */
 export async function chargeReset(env, site) {
   const box = await load(env, site);
-  Object.assign(box.st, { phase: null, ok: 0, known: null });
+  Object.assign(box.st, { phase: null, ok: 0, known: null, check: 0, redo: 0 });
   if (box.st.task && box.st.task.kind !== 'manual') box.st.task = null;
   await box.save();
 }

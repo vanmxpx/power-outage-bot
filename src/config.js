@@ -65,6 +65,15 @@ export const CHARGE_WATCH_TRIES = 15;
 /** When such an order cannot be asked about, the newer value is written once more after this pause. Seconds. */
 export const CHARGE_SETTLE_SEC = 240;
 
+/**
+ * While the low current is in force the inverter is read this often, to see that nothing
+ * wrote over the bot's value. Each reading is two or three requests. Seconds.
+ */
+export const CHARGE_VERIFY_SEC = 1800;
+
+/** After this many writes in a row that did not stay in the inverter, the admins are told and the bot slows down. */
+export const CHARGE_VERIFY_REDO = 3;
+
 /** A request to the control API is given up after this. Milliseconds. */
 export const CHARGE_HTTP_TIMEOUT_MS = 10000;
 

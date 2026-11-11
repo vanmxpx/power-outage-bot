@@ -94,7 +94,15 @@ test('outage: the low current is written at once; after an hour of stable grid t
   assert.ok(
     textsTo(raised, ADMIN).includes('⚡ Світло стабільне 1 год 0 хв: струм заряду від мережі знову 60 А.\nБуло 25 А.')
   );
-  assert.deepEqual(w.deyeCalls, { write: 2, result: 2, read: 0 }, 'four control requests for the whole outage');
+  assert.deepEqual(
+    [w.deyeCalls.write, w.deyeCalls.result],
+    [2, 2],
+    'two orders and their two results for the whole outage'
+  );
+  assert.ok(
+    w.deyeCalls.read >= 4 && w.deyeCalls.read <= 8,
+    w.deyeCalls.read + ' readings of the inverter in two hours'
+  );
   assert.deepEqual(
     w.events('charge_set').map((e) => [e.device, e.actor, JSON.parse(e.data).from, JSON.parse(e.data).to]),
     [
@@ -482,4 +490,103 @@ test('a deleted site takes its charge settings with it: a new site with the same
 
   await w.press(ADMIN, 's:sD:s1');
   for (const k of ['cfg.chg@s1', 'cfg.chg_high@s1', 'chg_state@s1']) assert.equal(w.kv(k), null, k);
+});
+
+/* ---------- the inverter is read back: the cloud's "carried out" is not the last word ---------- */
+
+test('after the write the inverter is read; a value that did not stay is written again, and the admins are told why', async () => {
+  const w = await enabled();
+  await grid(w, false);
+  w.step(120);
+  const confirmed = await w.tick();
+  assert.equal(lowTexts(confirmed).length, 1);
+  assert.equal(w.deyeCalls.read, 0, 'the reading comes with the next check');
+
+  w.charge = 60; // the inverter's screen wrote the old value back
+  w.step(120);
+  const fixed = await w.tick();
+  assert.equal(w.deyeCalls.read, 1);
+  assert.deepEqual(values(w), [25, 25]);
+  assert.equal(w.charge, 25);
+  assert.deepEqual(lowTexts(fixed), [
+    '🐢 Струм заряду від мережі тепер 25 А.\nБуло 60 А.\nВ інверторі це значення змінили не через бот, тому його записано знову.\nЗвичайний струм повернеться, коли світло буде стабільно 1 год 0 хв.',
+  ]);
+
+  w.step(120);
+  await w.tick();
+  assert.equal(w.deyeCalls.read, 2, 'the rewrite is read back as well');
+  assert.deepEqual(values(w), [25, 25]);
+  assert.equal(state(w).redo, 0);
+});
+
+test('during a long outage the inverter is read every half an hour, and once more when the grid returns', async () => {
+  const w = await enabled();
+  await grid(w, false);
+  await w.ticksFor(120);
+  assert.deepEqual(values(w), [25]);
+  assert.ok(w.deyeCalls.read >= 4 && w.deyeCalls.read <= 5, `${w.deyeCalls.read} readings in two hours`);
+
+  w.charge = 60; // changed in the vendor's app a minute before the grid returns
+  const before = w.deyeCalls.read;
+  await grid(w, true);
+  assert.equal(w.deyeCalls.read, before + 1, 'read at the moment the low current matters');
+  assert.deepEqual(values(w), [25, 25]);
+  assert.equal(w.charge, 25);
+});
+
+test('the grid comes back and goes again within the wait: the inverter is asked instead of trusted', async () => {
+  const w = await enabled();
+  await grid(w, false);
+  await w.ticksFor(4);
+  await grid(w, true);
+  await w.ticksFor(10);
+  const reads = w.deyeCalls.read;
+  w.charge = 60; // raised by hand in the vendor's app during the wait
+  await grid(w, false);
+  assert.equal(w.deyeCalls.read, reads + 1);
+  assert.deepEqual(values(w), [25, 25], 'the second outage does not start with the usual current');
+  assert.equal(w.charge, 25);
+});
+
+test('the raise is read back once; then the bot leaves the inverter alone', async () => {
+  const w = await enabled({ cM: 5 });
+  await grid(w, false);
+  await grid(w, true);
+  await w.ticksFor(8);
+  assert.deepEqual(values(w), [25, 60]);
+  const reads = w.deyeCalls.read;
+  await w.ticksFor(240);
+  assert.equal(
+    w.deyeCalls.read - reads <= 1,
+    true,
+    'no reading in the usual phase after the raise is seen in the inverter'
+  );
+  assert.equal(state(w).check, 0);
+  assert.deepEqual(w.deyeCalls.write, 2);
+});
+
+test('a value that never stays: three rewrites, one message, then a slower pace', async () => {
+  const w = await enabled();
+  await grid(w, false);
+  const sent = [];
+  for (let i = 0; i < 90; i++) {
+    w.charge = 60; // something keeps writing the old value back
+    w.step(120);
+    sent.push(...(await w.tick()));
+  }
+  const drift = textsTo(sent, ADMIN).filter((t) => t.startsWith('⚠️ Струм заряду від мережі 25 А не тримається'));
+  assert.equal(drift.length, 1);
+  assert.match(drift[0], /в ньому знову 60 А[\s\S]*Бот пробуватиме далі, але рідше\./);
+  assert.ok(w.deyeCalls.write <= 12, `${w.deyeCalls.write} writes in three hours`);
+  assert.ok(values(w).every((v) => v === 25));
+});
+
+test('the inverter cannot be read: nothing is rewritten and nobody is alarmed', async () => {
+  const w = await enabled();
+  w.readFails = Infinity;
+  const sent = [await grid(w, false), await w.ticksFor(120)].flat();
+  assert.deepEqual(values(w), [25]);
+  assert.equal(lowTexts(sent).length, 1);
+  assert.ok(!sent.some((m) => m.text.startsWith('⚠️')));
+  assert.ok(w.deyeCalls.read <= 16, `${w.deyeCalls.read} attempts to read in two hours`);
 });
