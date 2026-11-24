@@ -13,7 +13,7 @@
 import { LEVELS, LEVEL_LABEL, ROLES, deviceById, deviceSite, siteKey, siteTree, sitesOf } from './config.js';
 import { clearPerm, db, kvGet, kvSet, setPerm } from './db.js';
 import { displayName } from './store.js';
-import { edit, send } from './telegram.js';
+import { edit, isShared, send } from './telegram.js';
 import { NL, esc } from './util.js';
 
 const PAGE = 8;
@@ -25,7 +25,9 @@ export const isolate = (text) => `⁨${text}⁩`;
 export const userLabel = (u) =>
   `${isolate(esc(displayName(u)))}${u.alias && u.name ? ` (${isolate(esc(u.name))})` : ''}${u.username ? ` @${esc(u.username)}` : ''} (<code>${u.chat_id}</code>)`;
 
-const roleIcon = (u) => (u.status === 'pending' ? '⏳' : u.role === 'admin' ? '👑' : '👤');
+/** A group chat is listed with the people; it is told apart by its icon. */
+const isChat = (u) => isShared(u.chat_id);
+const roleIcon = (u) => (u.status === 'pending' ? '⏳' : isChat(u) ? '💬' : u.role === 'admin' ? '👑' : '👤');
 const back = (data, text = '⬅️ Назад') => [{ text, callback_data: data }];
 
 /* ---------- reading levels, with a draft on top ---------- */
@@ -110,7 +112,7 @@ export async function usersList(env) {
   return {
     text: [
       `<b>👥 Користувачі</b> (${list.length})`,
-      '👑 адмін · 👤 користувач · ⏳ чекає · 👁 бачить · 🎛 керує',
+      `👑 адмін · 👤 користувач${list.some(isChat) ? ' · 💬 чат' : ''} · ⏳ чекає · 👁 бачить · 🎛 керує`,
       '',
       ...lines,
     ].join(NL),
@@ -138,10 +140,12 @@ export async function userCard(env, me, u) {
     );
   } else if (id !== me.chat_id) {
     if (u.role !== 'admin') kb.push([{ text: '🔐 Доступ', callback_data: `u:e:${id}` }]);
+    // A chat cannot act as an admin; the admin role only widens what is sent to it.
+    const [down, up] = isChat(u)
+      ? ["🔕 Лише сповіщення про об'єкти", '🔔 Усі сповіщення, як адмінам']
+      : ['👤 Зробити користувачем', '👑 Зробити адміном'];
     kb.push([
-      u.role === 'admin'
-        ? { text: '👤 Зробити користувачем', callback_data: `a:${id}:user` }
-        : { text: '👑 Зробити адміном', callback_data: `a:${id}:admin` },
+      u.role === 'admin' ? { text: down, callback_data: `a:${id}:user` } : { text: up, callback_data: `a:${id}:admin` },
     ]);
   }
   if (u.status === 'approved') kb.push([{ text: "✏️ Ім'я в повідомленнях", callback_data: `s:uo:${id}` }]);
@@ -290,7 +294,9 @@ export async function onAccessCallback(env, cq, me, parts, done) {
       const u = await getU(a);
       if (!u) return show(await usersList(env));
       return show({
-        text: `Прибрати ${userLabel(u)}? Людина втратить доступ, кнопки в неї зникнуть.`,
+        text: isChat(u)
+          ? `Прибрати ${userLabel(u)}? Сповіщення в цей чат більше не надходитимуть.`
+          : `Прибрати ${userLabel(u)}? Людина втратить доступ, кнопки в неї зникнуть.`,
         kb: [
           [
             { text: '🗑 Так, прибрати', callback_data: `r:${u.chat_id}` },

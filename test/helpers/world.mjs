@@ -144,6 +144,7 @@ export const NOTIFY_KEY = 'notify-key';
 export const ADMIN = 1;
 export const MEMBER = 2;
 export const GUEST = 3;
+export const BOT = 700; // the bot's own Telegram id, the first part of its token
 
 /**
  * @param {object} [opts]
@@ -355,7 +356,7 @@ export function createWorld({ users = true } = {}) {
     TICK_KEY,
     NOTIFY_KEY,
     NOTIFY_NAME: 'Test',
-    TG_BOT_TOKEN: 'T',
+    TG_BOT_TOKEN: `${BOT}:T`,
     MIDEA_EMAIL: 'bot@example.com',
     MIDEA_PASSWORD: 'p',
     MIDEA_DEVICE_ID: '100000000000001',
@@ -459,9 +460,20 @@ export function createWorld({ users = true } = {}) {
   w.say = (chat, text, name = `User${chat}`, entities) =>
     post({ message: { chat: { id: chat, type: 'private' }, from: { first_name: name }, text, entities } });
 
-  /** Simulates an inline-button press. */
-  w.press = (chat, data) =>
-    post({ callback_query: { id: 'q', from: { id: chat }, data, message: { chat: { id: chat }, message_id: 1 } } });
+  /** Simulates an inline-button press; `where` is the chat the button is in, if not the person's own. */
+  w.press = (chat, data, where = chat) =>
+    post({ callback_query: { id: 'q', from: { id: chat }, data, message: { chat: { id: where }, message_id: 1 } } });
+
+  /** Simulates a message in a group: a text from `from`, or a service message given in `extra`. */
+  w.group = (chat, from, text, extra = {}) =>
+    post({
+      message: {
+        chat: { id: chat, type: 'supergroup', title: 'Сусіди' },
+        from: { id: from, first_name: `User${from}` },
+        text,
+        ...extra,
+      },
+    });
 
   /** Plain HTTP request to the worker. */
   w.http = async (path, init) => {

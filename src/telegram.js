@@ -43,11 +43,16 @@ const plain = (text) =>
     .replace(/&gt;/g, '>')
     .replace(/&amp;/g, '&');
 
+/** A group chat rather than a person: Telegram gives groups and supergroups negative ids. */
+export const isShared = (chatId) => Number(chatId) < 0;
+
 /**
  * Sends an HTML message. A text the owner edited may contain broken markup; then it is
  * sent again as plain text rather than lost.
  */
 export async function send(env, chatId, text, extra = {}) {
+  // The menu keyboard belongs to a person: in a group it would open for every member.
+  if (isShared(chatId) && extra.reply_markup?.keyboard) extra = { ...extra, reply_markup: undefined };
   const body = { chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true, ...extra };
   const r = await tg(env, 'sendMessage', body);
   if (r && r.ok === false && /parse entities/i.test(r.description || '')) {

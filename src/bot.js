@@ -4,6 +4,7 @@
  * Access model: /start sends a request to admins. An admin approves the person as an admin
  * (everything) or a user. A user gets a level per site (none · sees · controls), and a device
  * may be limited below its site's level. The very first /start with ACCESS_KEY creates the first admin.
+ * A group chat an admin added the bot to is listed with the people and gets notifications like one.
  *
  * Callback data: g:<days> outages · dl device list · d:<dev> card · h:<dev> history ·
  * dc:<dev>:on|off control · a:<uid>:<role> approve or change role · r:<uid> reject or revoke ·
@@ -19,7 +20,7 @@ import { onSettingsCallback, onSettingsText, openSettings } from './settings.js'
 import { displayName } from './store.js';
 import { startUpdate } from './updates.js';
 import { deviceCard, deviceHistory, devicesMenu, outagesReport, statusText } from './reports.js';
-import { RELEASES_BUTTON, broadcastDevice, edit, mainKeyboard, seesReleases, send, tg } from './telegram.js';
+import { RELEASES_BUTTON, broadcastDevice, edit, isShared, mainKeyboard, seesReleases, send, tg } from './telegram.js';
 import { releasesView } from './releases.js';
 import { chartMenu, sendChart, toggleSummaries } from './charts.js';
 import { NL, now } from './util.js';
@@ -71,9 +72,83 @@ async function handleStart(env, msg, user) {
   return send(env, id, 'Запит на доступ надіслано адміністратору.');
 }
 
+/* ---------- group chats ---------- */
+
+/**
+ * A group gets notifications the way a person does: it is a row in `users` under the chat's
+ * id, with a level per site. Only an admin links one, by adding the bot to the group or, if
+ * the bot is already there, with /start@<bot> in it. The bot answers nothing else in a group.
+ */
+
+/** The bot's own Telegram id: the part of the token before the colon. */
+const botId = (env) => Number(String(env.TG_BOT_TOKEN).split(':')[0]);
+
+async function linkChat(env, chat, admin) {
+  const id = chat.id;
+  const was = await getUser(env, id);
+  if (was?.status === 'approved') return send(env, id, 'Цей чат уже отримує сповіщення.');
+  await (
+    await db(env)
+  )
+    .prepare(
+      "INSERT INTO users (chat_id,name,username,role,status,created) VALUES (?,?,?,'user','approved',?) ON CONFLICT(chat_id) DO UPDATE SET name=excluded.name, username=excluded.username, role='user', status='approved'"
+    )
+    .bind(id, chat.title || 'Чат', chat.username || '', now())
+    .run();
+  await resetPerms(env, id);
+  await send(
+    env,
+    id,
+    '✅ Сюди надходитимуть сповіщення про світло. Що саме бачить цей чат, адмін налаштовує в «👥 Користувачі».'
+  );
+  const v = await openUserEditor(env, admin.chat_id, id);
+  return send(env, admin.chat_id, `💬 Чат додано, він отримуватиме сповіщення.${NL}${NL}${v.text}`, {
+    reply_markup: { inline_keyboard: v.kb },
+  });
+}
+
+/** The bot left the group, or was removed from it. */
+async function unlinkChat(env, id) {
+  const D = await db(env);
+  await D.prepare('DELETE FROM users WHERE chat_id=?').bind(id).run();
+  await D.prepare('DELETE FROM user_devices WHERE chat_id=?').bind(id).run();
+  await D.prepare('DELETE FROM kv WHERE k=?').bind(`nosum:${id}`).run();
+}
+
+/** A group that became a supergroup gets a new id; its access follows it. */
+async function moveChat(env, from, to) {
+  if (!(await getUser(env, from))) return;
+  const D = await db(env);
+  await unlinkChat(env, to);
+  await D.prepare('UPDATE users SET chat_id=? WHERE chat_id=?').bind(to, from).run();
+  await D.prepare('UPDATE user_devices SET chat_id=? WHERE chat_id=?').bind(to, from).run();
+  await D.prepare('UPDATE kv SET k=? WHERE k=?').bind(`nosum:${to}`, `nosum:${from}`).run();
+}
+
+async function onGroupMessage(env, msg) {
+  const { chat } = msg;
+  if (chat?.type !== 'group' && chat?.type !== 'supergroup') return;
+  if (msg.migrate_to_chat_id) return moveChat(env, chat.id, msg.migrate_to_chat_id);
+  if (msg.migrate_from_chat_id) return moveChat(env, msg.migrate_from_chat_id, chat.id);
+  if (msg.left_chat_member?.id === botId(env)) return unlinkChat(env, chat.id);
+
+  // Added to a group, or the group was created with the bot in it.
+  const added = msg.group_chat_created || (msg.new_chat_members || []).some((m) => m.id === botId(env));
+  const start = /^\/start(@\w+)?(\s|$)/.exec((msg.text || '').trim());
+  if ((!added && !start) || !msg.from?.id) return;
+  const admin = await getUser(env, msg.from.id);
+  if (admin?.status !== 'approved' || admin.role !== 'admin') return;
+  if (start?.[1]) {
+    // Another bot's command, seen because this bot reads the whole group.
+    const me = await tg(env, 'getMe', {});
+    if (`@${me.result?.username}`.toLowerCase() !== start[1].toLowerCase()) return;
+  }
+  return linkChat(env, chat, admin);
+}
+
 /** @param {import('./config.js').Env} env */
 export async function onMessage(env, msg) {
-  if (msg.chat?.type !== 'private') return;
+  if (msg.chat?.type !== 'private') return onGroupMessage(env, msg);
   const id = msg.chat.id;
   const text = (msg.text || '').trim();
   const user = await getUser(env, id);
@@ -175,7 +250,10 @@ async function handleAdmin(env, cq, me, act, a1, a2, done) {
     // A newly approved user, or an admin demoted to user, starts from "sees the first site";
     // an existing user keeps the access the admin already set.
     if (a2 === 'user' && !wasUser) await resetPerms(env, tid);
-    await send(env, tid, `✅ Доступ надано: ${ROLES[a2]}.`, { reply_markup: mainKeyboard(a2, env) });
+    if (isShared(tid)) {
+      const all = 'Цей чат отримуватиме всі сповіщення, зокрема службові для адмінів.';
+      await send(env, tid, a2 === 'admin' ? `🔔 ${all}` : "🔕 Цей чат отримуватиме лише сповіщення про свої об'єкти.");
+    } else await send(env, tid, `✅ Доступ надано: ${ROLES[a2]}.`, { reply_markup: mainKeyboard(a2, env) });
     if (a2 === 'user' && !wasUser) {
       const v = await openUserEditor(env, me.chat_id, tid);
       await edit(env, cq, `✅ ${userLabel(target)} → ${ROLES.user}${NL}${NL}${v.text}`, v.kb);
@@ -218,6 +296,15 @@ export async function onCallback(env, cq) {
     return;
   }
   if (act === 'ns') {
+    // Under a summary in a group the button is about the group, and the admin decides.
+    const here = cq.message?.chat?.id;
+    if (isShared(here)) {
+      if (me.role !== 'admin') return done('У груповому чаті це вирішує адмін');
+      const off = await toggleSummaries(env, here);
+      return done(
+        off ? 'Підсумки дня в цьому чаті вимкнено. Увімкнути: ця ж кнопка.' : 'Підсумки дня в цьому чаті ввімкнено.'
+      );
+    }
     const off = await toggleSummaries(env, me.chat_id);
     return done(off ? 'Підсумки дня вимкнено. Увімкнути: 📊 Статус → 📈 Графік.' : 'Підсумки дня знову надходитимуть.');
   }

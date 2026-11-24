@@ -67,7 +67,14 @@ async function handleSetup(env, url) {
     ],
   });
   const me = await tg(env, 'getMe', {});
-  return Response.json({ version: VERSION, webhook, commands: commands.ok, bot: me.result?.username });
+  return Response.json({
+    version: VERSION,
+    webhook,
+    commands: commands.ok,
+    bot: me.result?.username,
+    // false: BotFather forbids adding this bot to groups (/setjoingroups).
+    groups: me.result?.can_join_groups,
+  });
 }
 
 /** Per-invocation environment: secrets, the configuration from the database, request diagnostics. */

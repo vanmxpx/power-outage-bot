@@ -35,7 +35,7 @@ import {
   updateDevice,
   updateSite,
 } from './store.js';
-import { RELEASES_BUTTON, edit, mainKeyboard, send } from './telegram.js';
+import { RELEASES_BUTTON, edit, isShared, mainKeyboard, send } from './telegram.js';
 import { NL, esc, fmtDur } from './util.js';
 import { updateOffer } from './updates.js';
 
@@ -1036,7 +1036,7 @@ export async function onSettingsCallback(env, cq, me, parts, done) {
       // A reply keyboard changes only with a message: tell people about the new button once.
       if (!all) {
         for (const u of await usersBy(env, 'user')) {
-          if (u.role === 'admin') continue;
+          if (u.role === 'admin' || isShared(u.chat_id)) continue; // a group has no menu
           await send(env, u.chat_id, `🚀 У меню з'явилась кнопка «${RELEASES_BUTTON}»: історія версій бота.`, {
             reply_markup: mainKeyboard(u.role, env),
           });
