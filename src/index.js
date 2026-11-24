@@ -66,11 +66,16 @@ async function handleSetup(env, url) {
       { command: 'settings', description: 'Налаштування (адмін)' },
     ],
   });
+  // In a group the bot answers only this one, so the group's command menu offers nothing else.
+  const inGroups = await tg(env, 'setMyCommands', {
+    scope: { type: 'all_group_chats' },
+    commands: [{ command: 'status', description: 'Світло, батарея, пристрої' }],
+  });
   const me = await tg(env, 'getMe', {});
   return Response.json({
     version: VERSION,
     webhook,
-    commands: commands.ok,
+    commands: commands.ok && inGroups.ok,
     bot: me.result?.username,
     // false: BotFather forbids adding this bot to groups (/setjoingroups).
     groups: me.result?.can_join_groups,

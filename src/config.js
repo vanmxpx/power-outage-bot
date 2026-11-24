@@ -32,8 +32,11 @@ export const DEFAULT_TZ = 'Europe/Kyiv';
 /** Readings history kept for charts. Days. */
 export const READINGS_DAYS = 40;
 
-/** Local hour after which yesterday's summary goes out. */
+/** Local hour after which yesterday's summary goes out, unless the admin set another. */
 export const SUMMARY_HOUR = 8;
+
+/** A group gets one answer to /status in this time: each answer is a request to the inverter's cloud. Seconds. */
+export const GROUP_STATUS_GAP_SEC = 30;
 
 /** Battery level that triggers "🪫 сідає батарея" without grid, unless the admin set another. % */
 export const BATTERY_ALERT_DEFAULT = 30;

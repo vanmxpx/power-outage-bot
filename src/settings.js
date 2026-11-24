@@ -17,6 +17,7 @@ import {
   settingsProblem,
   validAmps,
 } from './charge.js';
+import { summaryHour } from './charts.js';
 import { batteryCapacity, parseCapacity, batteryCutoff, parseCutoff } from './runtime.js';
 import { CATEGORIES, CHARGE_AMPS_MAX, DEVICE_TYPES, devicesOf, sitesOf } from './config.js';
 import { db, kvGet, kvSet, usersBy } from './db.js';
@@ -87,6 +88,7 @@ function mainMenu(env) {
         { text: '🔗 Репозиторій', callback_data: 's:rp' },
       ],
       [{ text: '⬆️ Оновлення', callback_data: 's:up' }],
+      [{ text: `📊 Підсумки дня: о ${summaryHour(env)}:00`, callback_data: 's:sh' }],
       [
         {
           text: env.CFG?.settings?.releases === 'all' ? '🚀 Що нового: бачать усі' : '🚀 Що нового: лише адміни',
@@ -348,6 +350,24 @@ function tzMenu(env) {
     kb: [
       ...TZ_CHOICES.map((z) => [{ text: `${z === cur ? '✅ ' : ''}${z}`, callback_data: `s:tZ:${z}` }]),
       [{ text: '✏️ Інший', callback_data: 's:tY' }],
+      back('s:m'),
+    ],
+  };
+}
+
+function summaryMenu(env) {
+  return {
+    text: [
+      '<b>📊 Підсумки дня</b>',
+      `Підсумок учорашнього дня приходить о ${summaryHour(env)}:00 за часовим поясом бота.`,
+      '',
+      'Кожен вимикає підсумки для себе сам: 📊 Статус → 📈 Графік.',
+    ].join(NL),
+    kb: [
+      [
+        { text: '◀️ На годину раніше', callback_data: 's:sH:-1' },
+        { text: 'На годину пізніше ▶️', callback_data: 's:sH:1' },
+      ],
       back('s:m'),
     ],
   };
@@ -1025,6 +1045,12 @@ export async function onSettingsCallback(env, cq, me, parts, done) {
     case 'tY':
       await ask(env, chat, { kind: 'tz' }, 'Надішли часовий пояс, наприклад <code>Europe/Kyiv</code>.');
       return done();
+    case 'sh':
+      return show(summaryMenu(env));
+    case 'sH':
+      // 0…23, going round: an hour before midnight is 23:00.
+      await setSetting(env, 'sumhour', (summaryHour(env) + (Number(a) < 0 ? 23 : 1)) % 24);
+      return show(summaryMenu(env));
     case 'rp':
       return show(repoMenu(env));
     case 'rE':

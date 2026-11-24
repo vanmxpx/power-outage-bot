@@ -280,11 +280,18 @@ async function sendSummary(env, chatId, site, from, to) {
   await sendPicture(env, chatId, png, caption, [SUMMARY_OFF]);
 }
 
-/** Once a day after SUMMARY_HOUR: yesterday's summary to everyone who sees a site, unless they opted out. */
+/** Local hour the summary goes out at: the admin's choice, or SUMMARY_HOUR. */
+export function summaryHour(env) {
+  const set = env.CFG?.settings?.sumhour;
+  const h = Number(set);
+  return set !== undefined && set !== '' && Number.isInteger(h) && h >= 0 && h <= 23 ? h : SUMMARY_HOUR;
+}
+
+/** Once a day after the summary hour: yesterday's summary to everyone who sees a site, unless they opted out. */
 export async function dailySummaries(env) {
   const t = now();
   const today = localParts(t);
-  if (today.h < SUMMARY_HOUR || (await kvGet(env, 'summary_day')) === today.key) return;
+  if (today.h < summaryHour(env) || (await kvGet(env, 'summary_day')) === today.key) return;
   await kvSet(env, 'summary_day', today.key);
   await pruneReadings(env);
   const to = dayStart(t);
@@ -314,7 +321,7 @@ export async function chartMenu(env, user) {
   const off = (await kvGet(env, `nosum:${user.chat_id}`)) === '1';
   kb.push([{ text: off ? '🔔 Надсилати підсумки дня' : '🔕 Не надсилати підсумки дня', callback_data: 'ns' }]);
   return {
-    text: `<b>📈 Графік</b>${NL}Споживання, батарея і час без світла.${NL}Підсумки дня приходять щоранку о ${SUMMARY_HOUR}:00${off ? ' (у тебе вимкнено)' : ''}.`,
+    text: `<b>📈 Графік</b>${NL}Споживання, батарея і час без світла.${NL}Підсумки дня приходять щодня о ${summaryHour(env)}:00${off ? ' (у тебе вимкнено)' : ''}.`,
     kb,
   };
 }

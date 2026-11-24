@@ -172,3 +172,29 @@ test('the daily summary comes to the group; its off button there is for the grou
   w.step(86400);
   assert.ok((await w.tick()).some((m) => isSummary(m, CHAT)));
 });
+
+test('anyone in a linked group asks /status: the answer goes to the group, without buttons, and not too often', async () => {
+  const w = createWorld();
+  assert.deepEqual(await w.group(CHAT, 99, '/status'), [], 'the group is not linked');
+  await w.group(CHAT, ADMIN, undefined, joined);
+
+  const out = await w.group(CHAT, 99, '/status@test_bot');
+  assert.equal(out.length, 1);
+  assert.equal(out[0].chat, CHAT);
+  assert.match(out[0].text, /💡 Світло є/);
+  assert.match(out[0].text, /🔋 Батарея: 90%/);
+  assert.equal(out[0].markup, undefined);
+
+  assert.deepEqual(await w.group(CHAT, MEMBER, '/status'), [], 'asked again at once');
+  w.step(60);
+  assert.equal((await w.group(CHAT, MEMBER, '/status')).length, 1);
+  w.step(60);
+  assert.deepEqual(await w.group(CHAT, 99, '/status@other_bot'), [], "another bot's command");
+  assert.deepEqual(await w.group(CHAT, 99, '/devices'), []);
+  assert.deepEqual(await w.group(CHAT, 99, 'чи є світло?'), []);
+
+  // The group sees only what the admin opened to it.
+  w.db.exec(`DELETE FROM user_devices WHERE chat_id=${CHAT}`);
+  const none = await w.group(CHAT, 99, '/status');
+  assert.match(none[0].text, /^Доступних об'єктів і пристроїв немає/);
+});

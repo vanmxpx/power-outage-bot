@@ -87,3 +87,36 @@ test('a chart on demand; without the renderer the numbers come as text', async (
   const plain = await w.press(MEMBER, 'ch:home:w');
   assert.ok(textsTo(plain, MEMBER).some((t) => t.startsWith('📈 <b>7 днів</b>')));
 });
+
+test('the admin moves the hour of the daily summary', async () => {
+  const w = createWorld();
+  const screen = (await w.press(ADMIN, 's:sh')).find((m) => m.chat === 'edit');
+  assert.match(screen.text, /приходить о 8:00/);
+  const later = (await w.press(ADMIN, 's:sH:1')).find((m) => m.chat === 'edit');
+  assert.match(later.text, /приходить о 9:00/);
+  assert.equal(w.kv('cfg.sumhour'), '9');
+
+  await w.tick();
+  for (let i = 0; i < 30; i++) {
+    w.step(600);
+    await w.tick();
+  }
+  const isSummary = (m) => m.chat === MEMBER && m.text.startsWith('📊 <b>Підсумки дня');
+  w.step(17 * 3600); // the next day, 08:00: the standard hour, but not the chosen one
+  assert.ok(!(await w.tick()).some(isSummary));
+  w.step(3600); // 09:00
+  assert.ok((await w.tick()).some(isSummary));
+
+  const menu = (await w.say(MEMBER, '📊 Статус')) && (await w.press(MEMBER, 'cg')).find((m) => m.chat === MEMBER);
+  assert.match(menu.text, /Підсумки дня приходять щодня о 9:00/);
+
+  // An hour before midnight is 23:00, and the settings menu shows the hour.
+  w.db.exec("UPDATE kv SET v='0' WHERE k='cfg.sumhour'");
+  const round = (await w.press(ADMIN, 's:sH:-1')).find((m) => m.chat === 'edit');
+  assert.match(round.text, /приходить о 23:00/);
+  const main = (await w.press(ADMIN, 's:m')).find((m) => m.chat === 'edit');
+  assert.ok(main.markup.inline_keyboard.flat().some((b) => b.text === '📊 Підсумки дня: о 23:00'));
+
+  await w.press(MEMBER, 's:sH:1');
+  assert.equal(w.kv('cfg.sumhour'), '23', 'admins only');
+});

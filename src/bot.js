@@ -11,8 +11,8 @@
  * u:… people and access (access.js) · s:… settings (settings.js).
  */
 
-import { ROLES, controllable, deviceById, deviceSite } from './config.js';
-import { db, getPerm, getUser, kvSet, resetPerms, usersBy } from './db.js';
+import { GROUP_STATUS_GAP_SEC, ROLES, controllable, deviceById, deviceSite } from './config.js';
+import { db, getPerm, getUser, kvGet, kvSet, resetPerms, usersBy } from './db.js';
 import { DK, setDevicePower } from './devices.js';
 import { render } from './messages.js';
 import { onAccessCallback, onAccessText, openUserEditor, userCard, userLabel, usersList } from './access.js';
@@ -77,7 +77,8 @@ async function handleStart(env, msg, user) {
 /**
  * A group gets notifications the way a person does: it is a row in `users` under the chat's
  * id, with a level per site. Only an admin links one, by adding the bot to the group or, if
- * the bot is already there, with /start@<bot> in it. The bot answers nothing else in a group.
+ * the bot is already there, with /start@<bot> in it. In a linked group anyone may ask /status;
+ * the bot answers nothing else there.
  */
 
 /** The bot's own Telegram id: the part of the token before the colon. */
@@ -112,7 +113,7 @@ async function unlinkChat(env, id) {
   const D = await db(env);
   await D.prepare('DELETE FROM users WHERE chat_id=?').bind(id).run();
   await D.prepare('DELETE FROM user_devices WHERE chat_id=?').bind(id).run();
-  await D.prepare('DELETE FROM kv WHERE k=?').bind(`nosum:${id}`).run();
+  await D.prepare('DELETE FROM kv WHERE k IN (?,?)').bind(`nosum:${id}`, `status_at:${id}`).run();
 }
 
 /** A group that became a supergroup gets a new id; its access follows it. */
@@ -134,16 +135,30 @@ async function onGroupMessage(env, msg) {
 
   // Added to a group, or the group was created with the bot in it.
   const added = msg.group_chat_created || (msg.new_chat_members || []).some((m) => m.id === botId(env));
-  const start = /^\/start(@\w+)?(\s|$)/.exec((msg.text || '').trim());
-  if ((!added && !start) || !msg.from?.id) return;
-  const admin = await getUser(env, msg.from.id);
-  if (admin?.status !== 'approved' || admin.role !== 'admin') return;
-  if (start?.[1]) {
-    // Another bot's command, seen because this bot reads the whole group.
-    const me = await tg(env, 'getMe', {});
-    if (`@${me.result?.username}`.toLowerCase() !== start[1].toLowerCase()) return;
+  const [, command, to] = /^\/(start|status)(@\w+)?(?:\s|$)/.exec((msg.text || '').trim()) || [];
+  if (!added && !command) return;
+
+  if (command === 'status') {
+    // Anyone in a linked group may ask: the answer shows what the group is notified about anyway.
+    const group = await getUser(env, chat.id);
+    if (group?.status !== 'approved' || !(await addressed(env, to))) return;
+    const at = `status_at:${chat.id}`;
+    if (now() - Number(await kvGet(env, at)) < GROUP_STATUS_GAP_SEC) return;
+    await kvSet(env, at, now());
+    return send(env, chat.id, await statusText(env, group));
   }
+
+  if (!msg.from?.id) return;
+  const admin = await getUser(env, msg.from.id);
+  if (admin?.status !== 'approved' || admin.role !== 'admin' || !(await addressed(env, to))) return;
   return linkChat(env, chat, admin);
+}
+
+/** Whether a command with "@name" is for this bot; it sees other bots' commands if it reads the whole group. */
+async function addressed(env, to) {
+  if (!to) return true;
+  const me = await tg(env, 'getMe', {});
+  return `@${me.result?.username}`.toLowerCase() === to.toLowerCase();
 }
 
 /** @param {import('./config.js').Env} env */
