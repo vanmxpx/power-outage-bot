@@ -6,14 +6,15 @@
  * drops it. The draft lives in kv "draft:<admin chat id>".
  *
  * Callback data "u:…": l list · o:<uid> card · r:<uid> confirm removal · e:<uid> edit by person ·
+ * m:<chat id>:<kind> switch a kind of notification off or on for a group chat ·
  * k:<site.id|dev> edit by site/device · c:<key|uid> change a line · p:<page> page ·
  * q search · q0 clear search · s save · x cancel.
  */
 
 import { LEVELS, LEVEL_LABEL, ROLES, deviceById, deviceSite, siteKey, siteTree, sitesOf } from './config.js';
 import { clearPerm, db, kvGet, kvSet, setPerm } from './db.js';
-import { displayName } from './store.js';
-import { edit, isShared, send } from './telegram.js';
+import { displayName, setSetting } from './store.js';
+import { MUTABLE, edit, isShared, mutedKinds, send } from './telegram.js';
 import { NL, esc } from './util.js';
 
 const PAGE = 8;
@@ -147,6 +148,15 @@ export async function userCard(env, me, u) {
     kb.push([
       u.role === 'admin' ? { text: down, callback_data: `a:${id}:user` } : { text: up, callback_data: `a:${id}:admin` },
     ]);
+    if (isChat(u)) {
+      // What the chat can do without. Each button shows the current choice and switches it.
+      const off = mutedKinds(env, id);
+      for (const [kind, name] of Object.entries(MUTABLE)) {
+        kb.push([
+          { text: `${name}: ${off.includes(kind) ? 'не надсилати' : 'надсилати'}`, callback_data: `u:m:${id}:${kind}` },
+        ]);
+      }
+    }
   }
   if (u.status === 'approved') kb.push([{ text: "✏️ Ім'я в повідомленнях", callback_data: `s:uo:${id}` }]);
   if (u.status === 'approved' && id !== me.chat_id) kb.push([{ text: '🗑 Прибрати', callback_data: `u:r:${id}` }]);
@@ -304,6 +314,17 @@ export async function onAccessCallback(env, cq, me, parts, done) {
           ],
         ],
       });
+    }
+    case 'm': {
+      const u = await getU(a);
+      const kind = parts[2];
+      if (!u || !isChat(u) || !MUTABLE[kind]) return done('Не знайдено');
+      const off = mutedKinds(env, u.chat_id);
+      const next = off.includes(kind) ? off.filter((k) => k !== kind) : [...off, kind];
+      await setSetting(env, `mute@${u.chat_id}`, next.join(','));
+      const v = await userCard(env, me, u);
+      await edit(env, cq, v.text, v.kb);
+      return done(next.includes(kind) ? `${MUTABLE[kind]}: не надсилатиму` : `${MUTABLE[kind]}: надсилатиму`);
     }
     case 'e': {
       const u = await getU(a);

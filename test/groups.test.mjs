@@ -198,3 +198,97 @@ test('anyone in a linked group asks /status: the answer goes to the group, witho
   const none = await w.group(CHAT, 99, '/status');
   assert.match(none[0].text, /^Доступних об'єктів і пристроїв немає/);
 });
+
+test('/summary in a linked group posts today so far with a chart, for anyone in it', async () => {
+  const w = createWorld();
+  await w.group(CHAT, ADMIN, undefined, joined);
+  await w.tick();
+  for (let i = 0; i < 6; i++) {
+    w.step(600);
+    await w.tick();
+  }
+  const out = await w.group(CHAT, 99, '/summary@test_bot');
+  assert.equal(out.length, 1);
+  assert.equal(out[0].chat, CHAT);
+  assert.ok(out[0].photo, 'a chart');
+  assert.match(out[0].text, /^📈 <b>сьогодні<\/b>/);
+  assert.match(out[0].text, /💡 Світло було весь час/);
+
+  assert.deepEqual(await w.group(CHAT, MEMBER, '/summary'), [], 'asked again at once');
+  assert.equal((await w.group(CHAT, MEMBER, '/status')).length, 1, 'the other command has its own pause');
+
+  w.step(60);
+  w.db.exec(`DELETE FROM user_devices WHERE chat_id=${CHAT}`);
+  const none = await w.group(CHAT, 99, '/summary');
+  assert.match(none[0].text, /^Цей чат не бачить жодного об'єкта/);
+});
+
+test('the admin switches the battery warning and the charge-current messages off for a group', async () => {
+  const w = createWorld();
+  await w.tick();
+  await w.group(CHAT, ADMIN, undefined, joined);
+  const labels = (msgs) => msgs.flatMap((m) => m.markup?.inline_keyboard?.flat() || []).map((b) => b.text);
+  const card = await w.press(ADMIN, `u:o:${CHAT}`);
+  assert.ok(labels(card).includes('🪫 Батарея сідає: надсилати'));
+  assert.ok(labels(card).includes('🐢 Струм заряду: надсилати'));
+  assert.ok(
+    !labels(await w.press(ADMIN, `u:o:${MEMBER}`)).some((t) => t.startsWith('🪫')),
+    'a person has no such switches'
+  );
+
+  const off = await w.press(ADMIN, `u:m:${CHAT}:battery`);
+  assert.deepEqual(textsTo(off, 'answer'), ['🪫 Батарея сідає: не надсилатиму']);
+  assert.ok(labels(off).includes('🪫 Батарея сідає: не надсилати'));
+  assert.ok(labels(off).includes('🐢 Струм заряду: надсилати'));
+  assert.equal(w.kv(`cfg.mute@${CHAT}`), 'battery');
+  await w.press(GUEST, `u:m:${CHAT}:battery`);
+  await w.press(ADMIN, `u:m:${MEMBER}:battery`);
+  await w.press(ADMIN, `u:m:${CHAT}:nonsense`);
+  assert.equal(w.kv(`cfg.mute@${CHAT}`), 'battery', 'only an admin, only a chat, only a known kind');
+
+  // The light goes: the group hears about the light, but not about the battery.
+  w.step(120);
+  w.grid = false;
+  assert.ok(textsTo(await w.tick(), CHAT).some((t) => t.startsWith('🔌 Світло зникло')));
+  w.soc = 30;
+  w.step(120);
+  const low = await w.tick();
+  assert.ok(
+    textsTo(low, GUEST).some((t) => t.startsWith('🪫')),
+    'people are warned'
+  );
+  assert.equal(textsTo(low, CHAT).length, 0);
+  w.step(120);
+  w.grid = true;
+  w.soc = 90;
+  await w.tick();
+
+  // The group gets everything admins get, except the charge current.
+  await w.press(ADMIN, `u:m:${CHAT}:charge`);
+  assert.equal(w.kv(`cfg.mute@${CHAT}`), 'battery,charge');
+  await w.press(ADMIN, `a:${CHAT}:admin`);
+  await w.press(ADMIN, 's:cT:home');
+  assert.equal(w.kv('cfg.chg@home'), '1');
+  w.step(120);
+  w.grid = false;
+  const outage = await w.ticksFor(4);
+  assert.ok(
+    textsTo(outage, ADMIN).some((t) => t.startsWith('🐢')),
+    'the admin is told about the current'
+  );
+  assert.ok(!textsTo(outage, CHAT).some((t) => t.startsWith('🐢')));
+  assert.equal(textsTo(await notifyAdmins(w), CHAT).length, 1, 'other service notices still come');
+
+  // Switched back on, the next change of the current reaches the group.
+  const on = await w.press(ADMIN, `u:m:${CHAT}:charge`);
+  assert.deepEqual(textsTo(on, 'answer'), ['🐢 Струм заряду: надсилатиму']);
+  assert.equal(w.kv(`cfg.mute@${CHAT}`), 'battery');
+  w.step(120);
+  w.grid = true;
+  const back = await w.ticksFor(70);
+  assert.ok(textsTo(back, CHAT).some((t) => t.startsWith('⚡')));
+
+  // A group the bot left takes its switches with it.
+  await w.group(CHAT, 99, undefined, { left_chat_member: { id: BOT } });
+  assert.equal(w.kv(`cfg.mute@${CHAT}`), null);
+});

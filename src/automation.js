@@ -290,7 +290,7 @@ async function checkBattery(env, site, d) {
   await kvSet(env, key, '1');
   const since = Number(await kvGet(env, K(site, 'grid_since'))) || null;
   const vars = { ...siteVars(env, site), soc: d.soc, load: d.load, duration: since ? fmtDur(now() - since) : '' };
-  await broadcastDevice(env, siteKey(site), render(env, 'battery_low', vars));
+  await broadcastDevice(env, siteKey(site), render(env, 'battery_low', vars), 'battery');
 }
 
 /** @param {import('./config.js').Env} env */

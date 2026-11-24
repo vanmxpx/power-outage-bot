@@ -11,8 +11,8 @@
  * u:… people and access (access.js) · s:… settings (settings.js).
  */
 
-import { GROUP_STATUS_GAP_SEC, ROLES, controllable, deviceById, deviceSite } from './config.js';
-import { db, getPerm, getUser, kvGet, kvSet, resetPerms, usersBy } from './db.js';
+import { GROUP_ASK_GAP_SEC, ROLES, controllable, deviceById, deviceSite } from './config.js';
+import { db, getPerm, getUser, kvGet, kvSet, resetPerms, usersBy, viewableSites } from './db.js';
 import { DK, setDevicePower } from './devices.js';
 import { render } from './messages.js';
 import { onAccessCallback, onAccessText, openUserEditor, userCard, userLabel, usersList } from './access.js';
@@ -77,8 +77,8 @@ async function handleStart(env, msg, user) {
 /**
  * A group gets notifications the way a person does: it is a row in `users` under the chat's
  * id, with a level per site. Only an admin links one, by adding the bot to the group or, if
- * the bot is already there, with /start@<bot> in it. In a linked group anyone may ask /status;
- * the bot answers nothing else there.
+ * the bot is already there, with /start@<bot> in it. In a linked group anyone may ask /status
+ * and /summary; the bot answers nothing else there.
  */
 
 /** The bot's own Telegram id: the part of the token before the colon. */
@@ -113,7 +113,9 @@ async function unlinkChat(env, id) {
   const D = await db(env);
   await D.prepare('DELETE FROM users WHERE chat_id=?').bind(id).run();
   await D.prepare('DELETE FROM user_devices WHERE chat_id=?').bind(id).run();
-  await D.prepare('DELETE FROM kv WHERE k IN (?,?)').bind(`nosum:${id}`, `status_at:${id}`).run();
+  await D.prepare('DELETE FROM kv WHERE k IN (?,?,?,?)')
+    .bind(`nosum:${id}`, `status_at:${id}`, `summary_at:${id}`, `cfg.mute@${id}`)
+    .run();
 }
 
 /** A group that became a supergroup gets a new id; its access follows it. */
@@ -124,6 +126,7 @@ async function moveChat(env, from, to) {
   await D.prepare('UPDATE users SET chat_id=? WHERE chat_id=?').bind(to, from).run();
   await D.prepare('UPDATE user_devices SET chat_id=? WHERE chat_id=?').bind(to, from).run();
   await D.prepare('UPDATE kv SET k=? WHERE k=?').bind(`nosum:${to}`, `nosum:${from}`).run();
+  await D.prepare('UPDATE kv SET k=? WHERE k=?').bind(`cfg.mute@${to}`, `cfg.mute@${from}`).run();
 }
 
 async function onGroupMessage(env, msg) {
@@ -135,17 +138,22 @@ async function onGroupMessage(env, msg) {
 
   // Added to a group, or the group was created with the bot in it.
   const added = msg.group_chat_created || (msg.new_chat_members || []).some((m) => m.id === botId(env));
-  const [, command, to] = /^\/(start|status)(@\w+)?(?:\s|$)/.exec((msg.text || '').trim()) || [];
+  const [, command, to] = /^\/(start|status|summary)(@\w+)?(?:\s|$)/.exec((msg.text || '').trim()) || [];
   if (!added && !command) return;
 
-  if (command === 'status') {
+  if (command === 'status' || command === 'summary') {
     // Anyone in a linked group may ask: the answer shows what the group is notified about anyway.
     const group = await getUser(env, chat.id);
     if (group?.status !== 'approved' || !(await addressed(env, to))) return;
-    const at = `status_at:${chat.id}`;
-    if (now() - Number(await kvGet(env, at)) < GROUP_STATUS_GAP_SEC) return;
+    const at = `${command}_at:${chat.id}`;
+    if (now() - Number(await kvGet(env, at)) < GROUP_ASK_GAP_SEC) return;
     await kvSet(env, at, now());
-    return send(env, chat.id, await statusText(env, group));
+    if (command === 'status') return send(env, chat.id, await statusText(env, group));
+    // Today so far, the way "📈 Графік → сьогодні" shows it to a person.
+    const sites = await viewableSites(env, group);
+    if (!sites.length) return send(env, chat.id, "Цей чат не бачить жодного об'єкта. Доступ відкриває адмін бота.");
+    for (const site of sites) await sendChart(env, group, site.id, 'd');
+    return;
   }
 
   if (!msg.from?.id) return;

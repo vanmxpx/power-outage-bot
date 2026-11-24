@@ -207,7 +207,7 @@ async function tell(env, site, st, cfg) {
     who: t.actor,
   };
   const tpl = t.kind === 'low' ? 'charge_low' : t.kind === 'high' ? 'charge_high' : 'charge_manual';
-  await broadcast(env, render(env, tpl, v), 'admin');
+  await broadcast(env, render(env, tpl, v), 'admin', undefined, 'charge');
 }
 
 /**
@@ -250,7 +250,7 @@ async function failed(env, site, st, error, usable) {
     error: t.error,
     next: manual ? 'Запис скасовано. Спробуй ще раз, коли інвертор буде на зв’язку.' : 'Бот пробуватиме далі.',
   };
-  await broadcast(env, render(env, 'charge_failed', v), 'admin');
+  await broadcast(env, render(env, 'charge_failed', v), 'admin', undefined, 'charge');
 }
 
 /**
@@ -371,7 +371,7 @@ async function verify(env, site, box, cfg, usable) {
     const error = `інвертор підтверджує запис, але за хвилину в ньому знову ${cur} А`;
     await logEvent(env, 'charge_fail', chargeDevice(site), AUTOMATION, { to: target, error });
     const v = { ...vars(env, site), amps: target, duration: '', error, next: 'Бот пробуватиме далі, але рідше.' };
-    await broadcast(env, render(env, 'charge_drift', v), 'admin');
+    await broadcast(env, render(env, 'charge_drift', v), 'admin', undefined, 'charge');
   }
   open(st, st.phase, target, AUTOMATION, 'changed', cur);
   return work(env, site, box, cfg, usable, true);

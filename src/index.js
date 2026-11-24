@@ -66,10 +66,13 @@ async function handleSetup(env, url) {
       { command: 'settings', description: 'Налаштування (адмін)' },
     ],
   });
-  // In a group the bot answers only this one, so the group's command menu offers nothing else.
+  // In a group the bot answers only these, so the group's command menu offers nothing else.
   const inGroups = await tg(env, 'setMyCommands', {
     scope: { type: 'all_group_chats' },
-    commands: [{ command: 'status', description: 'Світло, батарея, пристрої' }],
+    commands: [
+      { command: 'status', description: 'Світло, батарея, пристрої' },
+      { command: 'summary', description: 'Підсумок за сьогодні з графіком' },
+    ],
   });
   const me = await tg(env, 'getMe', {});
   return Response.json({

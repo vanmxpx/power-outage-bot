@@ -73,9 +73,26 @@ export function edit(env, callbackQuery, text, inlineKeyboard) {
   });
 }
 
-/** Sends to every approved user with at least `minRole`. One failure does not stop the rest. */
-export async function broadcast(env, text, minRole = 'user', extra) {
+/**
+ * Kinds of notifications a group chat can do without. The admin switches them off in the
+ * chat's card; the choice is the setting "mute@<chat id>", a list of kinds.
+ */
+export const MUTABLE = { battery: '🪫 Батарея сідає', charge: '🐢 Струм заряду' };
+
+export const mutedKinds = (env, chatId) =>
+  String(env.CFG?.settings?.[`mute@${chatId}`] || '')
+    .split(',')
+    .filter(Boolean);
+
+const silenced = (env, u, kind) => Boolean(kind) && mutedKinds(env, u.chat_id).includes(kind);
+
+/**
+ * Sends to every approved user with at least `minRole`. One failure does not stop the rest.
+ * @param {string} [kind] a key of MUTABLE, if recipients may have switched this notification off
+ */
+export async function broadcast(env, text, minRole = 'user', extra, kind) {
   for (const u of await usersBy(env, minRole)) {
+    if (silenced(env, u, kind)) continue;
     try {
       await send(env, u.chat_id, text, typeof extra === 'function' ? extra(u) : extra);
     } catch {
@@ -84,10 +101,13 @@ export async function broadcast(env, text, minRole = 'user', extra) {
   }
 }
 
-/** Sends a site or device notification to everyone who can at least see it. */
-export async function broadcastDevice(env, dev, text) {
+/**
+ * Sends a site or device notification to everyone who can at least see it.
+ * @param {string} [kind] a key of MUTABLE, as in broadcast
+ */
+export async function broadcastDevice(env, dev, text, kind) {
   for (const u of await usersBy(env, 'user')) {
-    if ((await getPerm(env, u, dev)) === 'none') continue;
+    if (silenced(env, u, kind) || (await getPerm(env, u, dev)) === 'none') continue;
     try {
       await send(env, u.chat_id, text);
     } catch {
