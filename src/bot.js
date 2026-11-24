@@ -240,7 +240,8 @@ async function handleDevice(env, cq, me, act, dev, arg, done) {
       await kvSet(env, DK(device, 'boiler_auto_off'), '0');
       await kvSet(env, DK(device, 'want_off'), '0');
       const vars = { device: device.name, object: deviceSite(env, dev)?.name || '', who };
-      await broadcastDevice(env, dev, render(env, on ? 'manual_on' : 'manual_off', vars));
+      const kind = on ? 'manual_on' : 'manual_off';
+      await broadcastDevice(env, dev, render(env, kind, vars), kind);
     } catch (e) {
       return done(`Не вдалося: ${e.message}`.slice(0, 190));
     }

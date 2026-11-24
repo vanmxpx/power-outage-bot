@@ -74,11 +74,9 @@ export function edit(env, callbackQuery, text, inlineKeyboard) {
 }
 
 /**
- * Kinds of notifications a group chat can do without. The admin switches them off in the
- * chat's card; the choice is the setting "mute@<chat id>", a list of kinds.
+ * Notifications a group chat does without: keys of TEMPLATES the admin switched off in the
+ * chat's card. The choice is the setting "mute@<chat id>", a comma-separated list.
  */
-export const MUTABLE = { battery: '🪫 Батарея сідає', charge: '🐢 Струм заряду' };
-
 export const mutedKinds = (env, chatId) =>
   String(env.CFG?.settings?.[`mute@${chatId}`] || '')
     .split(',')
@@ -88,7 +86,7 @@ const silenced = (env, u, kind) => Boolean(kind) && mutedKinds(env, u.chat_id).i
 
 /**
  * Sends to every approved user with at least `minRole`. One failure does not stop the rest.
- * @param {string} [kind] a key of MUTABLE, if recipients may have switched this notification off
+ * @param {string} [kind] the notification's key in TEMPLATES: a chat that switched it off is skipped
  */
 export async function broadcast(env, text, minRole = 'user', extra, kind) {
   for (const u of await usersBy(env, minRole)) {
@@ -103,7 +101,7 @@ export async function broadcast(env, text, minRole = 'user', extra, kind) {
 
 /**
  * Sends a site or device notification to everyone who can at least see it.
- * @param {string} [kind] a key of MUTABLE, as in broadcast
+ * @param {string} [kind] the notification's key in TEMPLATES, as in broadcast
  */
 export async function broadcastDevice(env, dev, text, kind) {
   for (const u of await usersBy(env, 'user')) {

@@ -6,15 +6,17 @@
  * drops it. The draft lives in kv "draft:<admin chat id>".
  *
  * Callback data "u:…": l list · o:<uid> card · r:<uid> confirm removal · e:<uid> edit by person ·
- * m:<chat id>:<kind> switch a kind of notification off or on for a group chat ·
+ * n:<chat id> a group chat's notifications · m:<chat id>:<kind> switch one of them off or on ·
  * k:<site.id|dev> edit by site/device · c:<key|uid> change a line · p:<page> page ·
  * q search · q0 clear search · s save · x cancel.
  */
 
 import { LEVELS, LEVEL_LABEL, ROLES, deviceById, deviceSite, siteKey, siteTree, sitesOf } from './config.js';
+import { toggleSummaries } from './charts.js';
 import { clearPerm, db, kvGet, kvSet, setPerm } from './db.js';
+import { ADMIN_ONLY, TEMPLATES } from './messages.js';
 import { displayName, setSetting } from './store.js';
-import { MUTABLE, edit, isShared, mutedKinds, send } from './telegram.js';
+import { edit, isShared, mutedKinds, send } from './telegram.js';
 import { NL, esc } from './util.js';
 
 const PAGE = 8;
@@ -121,6 +123,44 @@ export async function usersList(env) {
   };
 }
 
+/* ---------- what a group chat is sent ---------- */
+
+/** The daily summary: not a template; it is switched by kv "nosum:<chat id>", as for a person. */
+const SUMMARY = 'summary';
+
+/** Notifications a chat can get: the objects' ones, and the admins' ones if it is sent everything. */
+const chatKinds = (u) => Object.keys(TEMPLATES).filter((k) => u.role === 'admin' || !ADMIN_ONLY.has(k));
+
+/** Those of them the admin switched off for the chat. */
+async function chatOff(env, u) {
+  const off = mutedKinds(env, u.chat_id).filter((k) => chatKinds(u).includes(k));
+  if ((await kvGet(env, `nosum:${u.chat_id}`)) === '1') off.push(SUMMARY);
+  return off;
+}
+
+/** A group chat's notifications, each one a switch. */
+async function chatNotifications(env, u) {
+  const off = await chatOff(env, u);
+  const row = (kind, title) => [
+    { text: `${off.includes(kind) ? '🚫' : '✅'} ${title}`, callback_data: `u:m:${u.chat_id}:${kind}` },
+  ];
+  const kb = chatKinds(u).map((k) => row(k, TEMPLATES[k].title));
+  kb.push(row(SUMMARY, '📊 Підсумки дня'), back(`u:o:${u.chat_id}`));
+  const lines = [
+    `📋 Сповіщення: ${userLabel(u)}`,
+    '',
+    '✅ надсилати · 🚫 не надсилати. Натискай рядок, щоб перемкнути.',
+    'Стосується лише цього чату: людям сповіщення приходять, як і раніше.',
+  ];
+  if (u.role !== 'admin') {
+    lines.push(
+      '',
+      'Службових сповіщень для адмінів тут немає: чат їх не отримує, доки в його картці не ввімкнено «🔔 Усі сповіщення, як адмінам».'
+    );
+  }
+  return { text: lines.join(NL), kb };
+}
+
 /** A person's card: who, role, access, and every action on them. */
 export async function userCard(env, me, u) {
   const L = levels(env, await allRows(env));
@@ -149,13 +189,8 @@ export async function userCard(env, me, u) {
       u.role === 'admin' ? { text: down, callback_data: `a:${id}:user` } : { text: up, callback_data: `a:${id}:admin` },
     ]);
     if (isChat(u)) {
-      // What the chat can do without. Each button shows the current choice and switches it.
-      const off = mutedKinds(env, id);
-      for (const [kind, name] of Object.entries(MUTABLE)) {
-        kb.push([
-          { text: `${name}: ${off.includes(kind) ? 'не надсилати' : 'надсилати'}`, callback_data: `u:m:${id}:${kind}` },
-        ]);
-      }
+      const n = (await chatOff(env, u)).length;
+      kb.push([{ text: `📋 Кожне сповіщення окремо${n ? ` (вимкнено ${n})` : ''}`, callback_data: `u:n:${id}` }]);
     }
   }
   if (u.status === 'approved') kb.push([{ text: "✏️ Ім'я в повідомленнях", callback_data: `s:uo:${id}` }]);
@@ -315,16 +350,27 @@ export async function onAccessCallback(env, cq, me, parts, done) {
         ],
       });
     }
+    case 'n': {
+      const u = await getU(a);
+      if (!u || !isChat(u) || u.status !== 'approved') return done('Не знайдено');
+      return show(await chatNotifications(env, u));
+    }
     case 'm': {
       const u = await getU(a);
       const kind = parts[2];
-      if (!u || !isChat(u) || !MUTABLE[kind]) return done('Не знайдено');
-      const off = mutedKinds(env, u.chat_id);
-      const next = off.includes(kind) ? off.filter((k) => k !== kind) : [...off, kind];
-      await setSetting(env, `mute@${u.chat_id}`, next.join(','));
-      const v = await userCard(env, me, u);
+      const known = u && isChat(u) && u.status === 'approved' && (kind === SUMMARY || chatKinds(u).includes(kind));
+      if (!known) return done('Не знайдено');
+      let off;
+      if (kind === SUMMARY) off = await toggleSummaries(env, u.chat_id);
+      else {
+        const list = mutedKinds(env, u.chat_id);
+        off = !list.includes(kind);
+        const next = off ? [...list, kind] : list.filter((k) => k !== kind);
+        await setSetting(env, `mute@${u.chat_id}`, next.join(','));
+      }
+      const v = await chatNotifications(env, u);
       await edit(env, cq, v.text, v.kb);
-      return done(next.includes(kind) ? `${MUTABLE[kind]}: не надсилатиму` : `${MUTABLE[kind]}: надсилатиму`);
+      return done(off ? 'Не надсилатиму' : 'Надсилатиму');
     }
     case 'e': {
       const u = await getU(a);

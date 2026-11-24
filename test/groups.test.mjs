@@ -223,28 +223,46 @@ test('/summary in a linked group posts today so far with a chart, for anyone in 
   assert.match(none[0].text, /^Цей чат не бачить жодного об'єкта/);
 });
 
-test('the admin switches the battery warning and the charge-current messages off for a group', async () => {
+test('every notification of a group is a switch of its own in the group card', async () => {
   const w = createWorld();
   await w.tick();
   await w.group(CHAT, ADMIN, undefined, joined);
   const labels = (msgs) => msgs.flatMap((m) => m.markup?.inline_keyboard?.flat() || []).map((b) => b.text);
+
   const card = await w.press(ADMIN, `u:o:${CHAT}`);
-  assert.ok(labels(card).includes('🪫 Батарея сідає: надсилати'));
-  assert.ok(labels(card).includes('🐢 Струм заряду: надсилати'));
+  assert.ok(labels(card).includes('📋 Кожне сповіщення окремо'));
   assert.ok(
-    !labels(await w.press(ADMIN, `u:o:${MEMBER}`)).some((t) => t.startsWith('🪫')),
-    'a person has no such switches'
+    !labels(await w.press(ADMIN, `u:o:${MEMBER}`)).some((t) => t.startsWith('📋')),
+    'a person has no such screen'
   );
 
-  const off = await w.press(ADMIN, `u:m:${CHAT}:battery`);
-  assert.deepEqual(textsTo(off, 'answer'), ['🪫 Батарея сідає: не надсилатиму']);
-  assert.ok(labels(off).includes('🪫 Батарея сідає: не надсилати'));
-  assert.ok(labels(off).includes('🐢 Струм заряду: надсилати'));
-  assert.equal(w.kv(`cfg.mute@${CHAT}`), 'battery');
-  await w.press(GUEST, `u:m:${CHAT}:battery`);
-  await w.press(ADMIN, `u:m:${MEMBER}:battery`);
+  // The group gets the objects' notifications; each is listed and on.
+  const screen = await w.press(ADMIN, `u:n:${CHAT}`);
+  assert.deepEqual(labels(screen), [
+    '✅ 🔌 Світло зникло',
+    "✅ 💡 Світло з'явилось",
+    '✅ ⛔ Пристрій вимкнено автоматикою',
+    '✅ 🔥 Пристрій увімкнено автоматикою',
+    ...labels(screen).slice(4, -3),
+    '✅ 🪫 Сідає батарея',
+    '✅ 📊 Підсумки дня',
+    '⬅️ Назад',
+  ]);
+  assert.equal(labels(screen).length, 11, 'nine notifications, the summary and the way back');
+  assert.ok(!labels(screen).some((t) => t.includes('Струм заряду')), 'service notices are not listed for it');
+
+  const off = await w.press(ADMIN, `u:m:${CHAT}:battery_low`);
+  assert.deepEqual(textsTo(off, 'answer'), ['Не надсилатиму']);
+  assert.ok(labels(off).includes('🚫 🪫 Сідає батарея'));
+  assert.ok(labels(off).includes('✅ 🔌 Світло зникло'));
+  assert.equal(w.kv(`cfg.mute@${CHAT}`), 'battery_low');
+  assert.ok(labels(await w.press(ADMIN, `u:o:${CHAT}`)).includes('📋 Кожне сповіщення окремо (вимкнено 1)'));
+
+  await w.press(GUEST, `u:m:${CHAT}:grid_off`);
+  await w.press(ADMIN, `u:m:${MEMBER}:grid_off`);
   await w.press(ADMIN, `u:m:${CHAT}:nonsense`);
-  assert.equal(w.kv(`cfg.mute@${CHAT}`), 'battery', 'only an admin, only a chat, only a known kind');
+  await w.press(ADMIN, `u:m:${CHAT}:charge_low`);
+  assert.equal(w.kv(`cfg.mute@${CHAT}`), 'battery_low', 'only an admin, only a chat, only what the chat can get');
 
   // The light goes: the group hears about the light, but not about the battery.
   w.step(120);
@@ -258,15 +276,24 @@ test('the admin switches the battery warning and the charge-current messages off
     'people are warned'
   );
   assert.equal(textsTo(low, CHAT).length, 0);
+
+  // With "light is back" off too, the group hears only that the light went.
+  await w.press(ADMIN, `u:m:${CHAT}:grid_on`);
   w.step(120);
   w.grid = true;
   w.soc = 90;
-  await w.tick();
+  const back = await w.tick();
+  assert.ok(textsTo(back, GUEST).some((t) => t.startsWith('💡')));
+  assert.equal(textsTo(back, CHAT).length, 0);
+  await w.press(ADMIN, `u:m:${CHAT}:grid_on`);
+  assert.equal(w.kv(`cfg.mute@${CHAT}`), 'battery_low');
 
-  // The group gets everything admins get, except the charge current.
-  await w.press(ADMIN, `u:m:${CHAT}:charge`);
-  assert.equal(w.kv(`cfg.mute@${CHAT}`), 'battery,charge');
+  // A group that is sent everything has the admins' notifications in the list as well.
   await w.press(ADMIN, `a:${CHAT}:admin`);
+  const all = await w.press(ADMIN, `u:n:${CHAT}`);
+  assert.equal(labels(all).length, 20, 'eighteen notifications, the summary and the way back');
+  for (const kind of ['charge_low', 'charge_high']) await w.press(ADMIN, `u:m:${CHAT}:${kind}`);
+  assert.equal(w.kv(`cfg.mute@${CHAT}`), 'battery_low,charge_low,charge_high');
   await w.press(ADMIN, 's:cT:home');
   assert.equal(w.kv('cfg.chg@home'), '1');
   w.step(120);
@@ -277,16 +304,21 @@ test('the admin switches the battery warning and the charge-current messages off
     'the admin is told about the current'
   );
   assert.ok(!textsTo(outage, CHAT).some((t) => t.startsWith('🐢')));
+  assert.ok(textsTo(outage, CHAT).some((t) => t.startsWith('🔌 Світло зникло')));
   assert.equal(textsTo(await notifyAdmins(w), CHAT).length, 1, 'other service notices still come');
 
   // Switched back on, the next change of the current reaches the group.
-  const on = await w.press(ADMIN, `u:m:${CHAT}:charge`);
-  assert.deepEqual(textsTo(on, 'answer'), ['🐢 Струм заряду: надсилатиму']);
-  assert.equal(w.kv(`cfg.mute@${CHAT}`), 'battery');
+  const on = await w.press(ADMIN, `u:m:${CHAT}:charge_high`);
+  assert.deepEqual(textsTo(on, 'answer'), ['Надсилатиму']);
   w.step(120);
   w.grid = true;
-  const back = await w.ticksFor(70);
-  assert.ok(textsTo(back, CHAT).some((t) => t.startsWith('⚡')));
+  const restored = await w.ticksFor(70);
+  assert.ok(textsTo(restored, CHAT).some((t) => t.startsWith('⚡')));
+
+  // The summary is in the same list; it is the switch the button under a summary flips.
+  const noSummary = await w.press(ADMIN, `u:m:${CHAT}:summary`);
+  assert.ok(labels(noSummary).includes('🚫 📊 Підсумки дня'));
+  assert.equal(w.kv(`nosum:${CHAT}`), '1');
 
   // A group the bot left takes its switches with it.
   await w.group(CHAT, 99, undefined, { left_chat_member: { id: BOT } });

@@ -114,7 +114,7 @@ async function inverterDown(env, site, e) {
   if (now() - since < GIVEUP_SEC || (await kvGet(env, K(site, 'deye_alerted'))) === '1') return;
   await kvSet(env, K(site, 'deye_alerted'), '1');
   const vars = { ...siteVars(env, site), duration: fmtDur(now() - since), error: e.message || String(e) };
-  await broadcast(env, render(env, 'inverter_down', vars), 'admin');
+  await broadcast(env, render(env, 'inverter_down', vars), 'admin', undefined, 'inverter_down');
 }
 
 async function inverterUp(env, site) {
@@ -124,7 +124,7 @@ async function inverterUp(env, site) {
   if ((await kvGet(env, K(site, 'deye_alerted'))) === '1') {
     await kvSet(env, K(site, 'deye_alerted'), '0');
     const vars = { ...siteVars(env, site), duration: fmtDur(now() - since) };
-    await broadcast(env, render(env, 'inverter_up', vars), 'admin');
+    await broadcast(env, render(env, 'inverter_up', vars), 'admin', undefined, 'inverter_up');
   }
 }
 
@@ -135,13 +135,19 @@ async function checkStale(env, site, reading) {
   if (age > STALE_SEC) {
     if ((await kvGet(env, key)) !== '1') {
       await kvSet(env, key, '1');
-      await broadcast(env, render(env, 'stale', { ...siteVars(env, site), duration: fmtDur(age) }), 'admin');
+      await broadcast(
+        env,
+        render(env, 'stale', { ...siteVars(env, site), duration: fmtDur(age) }),
+        'admin',
+        undefined,
+        'stale'
+      );
     }
     return true;
   }
   if ((await kvGet(env, key)) === '1') {
     await kvSet(env, key, '0');
-    await broadcast(env, render(env, 'fresh', siteVars(env, site)), 'admin');
+    await broadcast(env, render(env, 'fresh', siteVars(env, site)), 'admin', undefined, 'fresh');
   }
   return false;
 }
@@ -168,7 +174,8 @@ async function onGridChange(env, site, prev, d) {
       soc: d.soc,
       volt: d.volt,
     };
-    await broadcastDevice(env, siteKey(site), render(env, d.grid ? 'grid_on' : 'grid_off', vars));
+    const kind = d.grid ? 'grid_on' : 'grid_off';
+    await broadcastDevice(env, siteKey(site), render(env, kind, vars), kind);
   }
 
   // Grid lost → the devices must go off; each task stays open until it succeeds.
@@ -185,7 +192,7 @@ async function onGridChange(env, site, prev, d) {
 async function escalateOnce(env, dev, flag, since, key, site) {
   if (now() - since < GIVEUP_SEC || (await kvGet(env, DK(dev, flag))) === '1') return;
   await kvSet(env, DK(dev, flag), '1');
-  await broadcastDevice(env, dev.id, render(env, key, { device: dev.name, object: site.name }));
+  await broadcastDevice(env, dev.id, render(env, key, { device: dev.name, object: site.name }), key);
 }
 
 const delay = (since) => (now() - since > LATE_NOTE_SEC ? fmtDur(now() - since) : '');
@@ -197,7 +204,7 @@ async function switchOff(env, site, dev, d) {
       await setDevicePower(env, dev, false, AUTOMATION);
       await kvSet(env, DK(dev, 'boiler_auto_off'), '1');
       const vars = { device: dev.name, object: site.name, delay: delay(since) };
-      await broadcastDevice(env, dev.id, render(env, 'device_auto_off', vars));
+      await broadcastDevice(env, dev.id, render(env, 'device_auto_off', vars), 'device_auto_off');
     }
     await kvSet(env, DK(dev, 'want_off'), '0');
   } catch {
@@ -213,7 +220,7 @@ async function switchBackOn(env, site, dev, d) {
     await setDevicePower(env, dev, true, AUTOMATION);
     await kvSet(env, DK(dev, 'boiler_auto_off'), '0');
     const vars = { device: dev.name, object: site.name, delay: delay(since) };
-    await broadcastDevice(env, dev.id, render(env, 'device_auto_on', vars));
+    await broadcastDevice(env, dev.id, render(env, 'device_auto_on', vars), 'device_auto_on');
   } catch {
     await escalateOnce(env, dev, 'on_alerted', since, 'device_on_failed', site);
   }
@@ -290,7 +297,7 @@ async function checkBattery(env, site, d) {
   await kvSet(env, key, '1');
   const since = Number(await kvGet(env, K(site, 'grid_since'))) || null;
   const vars = { ...siteVars(env, site), soc: d.soc, load: d.load, duration: since ? fmtDur(now() - since) : '' };
-  await broadcastDevice(env, siteKey(site), render(env, 'battery_low', vars), 'battery');
+  await broadcastDevice(env, siteKey(site), render(env, 'battery_low', vars), 'battery_low');
 }
 
 /** @param {import('./config.js').Env} env */

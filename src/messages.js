@@ -30,6 +30,19 @@ export const VARS = {
   again: 'пояснення, коли значення в інверторі змінили не через бот; інакше порожньо',
 };
 
+/** Notifications that go to admins only; the rest go to everyone who sees the object or device. */
+export const ADMIN_ONLY = new Set([
+  'inverter_down',
+  'inverter_up',
+  'stale',
+  'fresh',
+  'charge_low',
+  'charge_high',
+  'charge_manual',
+  'charge_drift',
+  'charge_failed',
+]);
+
 /**
  * @type {Record<string, {title: string, text: string, vars: string[], sample: Record<string, string>}>}
  */
